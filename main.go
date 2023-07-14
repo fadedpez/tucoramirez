@@ -78,6 +78,38 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		_, _ = s.ChannelMessageSend(m.ChannelID, randQuote("quotes.txt"))
 	}
 
+	if m.Content == "thanks tuco" {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	}
+
+	if m.Content == "Thanks tuco" {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	}
+
+	if m.Content == "Thanks Tuco" {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	}
+
+	if m.Content == "thanks Tuco" {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	}
+
+	if m.Content == "Thanks, Tuco." {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	}
+
+	if m.Content == "Thanks, Tuco" {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	}
+
+	if m.Content == "thanks, Tuco" {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	}
+
+	if m.Content == "thanks, tuco" {
+		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	}
+
 }
 
 func randQuote (path string) string {
