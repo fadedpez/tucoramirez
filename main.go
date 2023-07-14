@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"github.com/bwmarrin/discordgo"
@@ -73,17 +74,25 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	var sayings = []string{
-		"When you have to shoot, shoot, don't talk.",
-		"There are two kinds of people in the world, my friend. Those who have a rope around their neck and those who have the job of doing the cutting. ",
-		"You want to know who you are? Huh? Huh? You don't, I do, everyone does... you're the son of a thousand fathers, all bastards like you. ",
-		"If you work for a living, why do you kill yourself working?",
-		"There are two kinds of spurs, my friend. Those that come in by the door, those that come in by the window.",
-		"Cervesa!",
-	}
-
 	if m.Content == "tucosay" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, sayings[rand.Intn(len(sayings))])
+		_, _ = s.ChannelMessageSend(m.ChannelID, randQuote("quotes.txt"))
 	}
 
+}
+
+func randQuote (path string) string {
+	file, err := os.Open("quotes.txt")
+	if err != nil {
+		return ""
+	}
+defer file.Close()
+
+	var quotes []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		quotes = append(quotes, scanner.Text())
+	}
+
+	quote := quotes[rand.Intn(len(quotes))]
+	return quote
 }
