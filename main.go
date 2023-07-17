@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"regexp"
 	"syscall"
 	"time"
 )
@@ -77,38 +78,48 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Content == "tucosay" {
 		_, _ = s.ChannelMessageSend(m.ChannelID, randQuote("quotes.txt"))
 	}
-
+	
 	if m.Content == "thanks tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+		match, err := regexp.MatchString(`(?i)thanks tuco`, m.Content)
+		if err != nil {
+			return
+		}
+		if match {
+			_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+		}
 	}
 
-	if m.Content == "Thanks tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "Thanks Tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "thanks Tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "Thanks, Tuco." {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "Thanks, Tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "thanks, Tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "thanks, tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
+	////if m.Content == "thanks tuco" {
+	////	_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	////}
+	//
+	//if m.Content == "Thanks tuco" {
+	//	_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	//}
+	//
+	//if m.Content == "Thanks Tuco" {
+	//	_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	//}
+	//
+	//if m.Content == "thanks Tuco" {
+	//	_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	//}
+	//
+	//if m.Content == "Thanks, Tuco." {
+	//	_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	//}
+	//
+	//if m.Content == "Thanks, Tuco" {
+	//	_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	//}
+	//
+	//if m.Content == "thanks, Tuco" {
+	//	_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	//}
+	//
+	//if m.Content == "thanks, tuco" {
+	//	_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
+	//}
 
 }
 
