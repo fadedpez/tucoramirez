@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"regexp"
 	"syscall"
 	"time"
 )
@@ -78,46 +79,18 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		_, _ = s.ChannelMessageSend(m.ChannelID, randQuote("quotes.txt"))
 	}
 
-	if m.Content == "thanks tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "Thanks tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "Thanks Tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "thanks Tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "Thanks, Tuco." {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "Thanks, Tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "thanks, Tuco" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
-	}
-
-	if m.Content == "thanks, tuco" {
+	if regexp.MustCompile(`[tT][hH][aA][nN][kK][sS] [tT][uU][cC][oO]`).MatchString(m.Content) {
 		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
 	}
 
 }
 
-func randQuote (path string) string {
+func randQuote(path string) string {
 	file, err := os.Open("quotes.txt")
 	if err != nil {
 		return ""
 	}
-defer file.Close()
+	defer file.Close()
 
 	var quotes []string
 	scanner := bufio.NewScanner(file)
