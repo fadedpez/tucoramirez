@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -83,6 +84,22 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		_, _ = s.ChannelMessageSend(m.ChannelID, "De nada, amigo.")
 	}
 
+	if m.Content == "tucoduel" {
+		tucoRoll := diceRoll()
+		userRoll := diceRoll()
+
+		tucoString := strconv.Itoa(tucoRoll)
+		userString := strconv.Itoa(userRoll)
+
+		if tucoRoll > userRoll {
+			_, _ = s.ChannelMessageSend(m.ChannelID, "Hurrah! Come back when you learn how to shoot cabrón! . (Tuco: "+tucoString+" ; User: "+userString+")")
+		} else if tucoRoll < userRoll {
+			_, _ = s.ChannelMessageSend(m.ChannelID, "You pig! You haven't seen the last of Tuco! (Tuco: "+tucoString+" ; User: "+userString+")")
+		} else {
+			_, _ = s.ChannelMessageSend(m.ChannelID, "It seems we live to fight another day, friend. (Tuco: "+tucoString+" ; User: "+userString+")")
+		}
+	}
+
 }
 
 func randQuote(path string) string {
@@ -100,4 +117,13 @@ func randQuote(path string) string {
 
 	quote := quotes[rand.Intn(len(quotes))]
 	return quote
+}
+
+//create a dice roll function
+
+func diceRoll() int {
+	min := 1
+	max := 100
+	r := rand.Intn(max-min) + min
+	return r
 }
