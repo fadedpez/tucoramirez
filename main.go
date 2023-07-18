@@ -77,7 +77,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	if m.Content == "tucosay" {
-		_, _ = s.ChannelMessageSend(m.ChannelID, randQuote("quotes.txt"))
+		_, _ = s.ChannelMessageSend(m.ChannelID, randFromTxt("quotes.txt"))
 	}
 
 	if regexp.MustCompile(`[tT][hH][aA][nN][kK][sS] [tT][uU][cC][oO]`).MatchString(m.Content) {
@@ -92,7 +92,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		userString := strconv.Itoa(userRoll)
 
 		if tucoRoll > userRoll {
-			_, _ = s.ChannelMessageSend(m.ChannelID, "Hurrah! Come back when you learn how to shoot cabrón! . (Tuco: "+tucoString+" ; User: "+userString+")")
+			_, _ = s.ChannelMessageSend(m.ChannelID, "Hurrah! Come back when you learn how to shoot cabrón! (Tuco: "+tucoString+" ; User: "+userString+")")
 		} else if tucoRoll < userRoll {
 			_, _ = s.ChannelMessageSend(m.ChannelID, "You pig! You haven't seen the last of Tuco! (Tuco: "+tucoString+" ; User: "+userString+")")
 		} else {
@@ -102,8 +102,8 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 }
 
-func randQuote(path string) string {
-	file, err := os.Open("quotes.txt")
+func randFromTxt(path string) string {
+	file, err := os.Open(path)
 	if err != nil {
 		return ""
 	}
@@ -118,8 +118,6 @@ func randQuote(path string) string {
 	quote := quotes[rand.Intn(len(quotes))]
 	return quote
 }
-
-//create a dice roll function
 
 func diceRoll() int {
 	min := 1
