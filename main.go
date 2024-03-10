@@ -100,6 +100,10 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 	}
 
+	if regexp.MustCompile(`tuco\?$`).MatchString(m.Content) {
+		_, _ = s.ChannelMessageSend(m.ChannelID, randFromTxt("images.txt"))
+	}
+
 }
 
 func randFromTxt(path string) string {
