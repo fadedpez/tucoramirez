@@ -119,26 +119,27 @@ func handleButtonClick(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	case "draw":
 		tucoRoll := diceRoll()
 		userRoll := diceRoll()
-		content := "che?"
+		duelResult := "che?"
+		userMention := fmt.Sprintf("<@%s>", i.Member.User.ID)
 
 		tucoString := strconv.Itoa(tucoRoll)
 		userString := strconv.Itoa(userRoll)
 
 		if tucoRoll > userRoll {
-			content = "Hurrah! Come back when you learn how to shoot cabrón! (Tuco: " + tucoString + " ; %s: " + userString + ")"
+			duelResult = "Hurrah! Come back when you learn how to shoot cabrón! (Tuco: " + tucoString + " ; %s: " + userString + ")" + userMention
 		} else if tucoRoll < userRoll {
-			content = "You pig! You haven't seen the last of Tuco! (Tuco: " + tucoString + " ; %s: " + userString + ")"
+			duelResult = "You pig! You haven't seen the last of Tuco! (Tuco: " + tucoString + " ; %s: " + userString + ")" + userMention
 		} else {
-			content = "It seems we live to fight another day, amigo. (Tuco: " + tucoString + " ; %s: " + userString + ")"
+			duelResult = "It seems we live to fight another day, amigo. (Tuco: " + tucoString + " ; %s: " + userString + ")" + userMention
 		}
 
-		_, _ = s.ChannelMessageSend(i.ChannelID, content)
+		_, _ = s.ChannelMessageSend(i.ChannelID, duelResult)
 	}
 
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: "Duel Tuco",
+			Content: "What goes here?",
 		},
 	})
 
