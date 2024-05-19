@@ -37,6 +37,7 @@ func main() {
 	// dg.AddHandler(messageCreate) // This is the old way of doing things
 
 	dg.AddHandler(tucobot.MessageCreate)
+	dg.AddHandler(tucobot.InteractionCreate)
 
 	dg.Identify.Intents |= discordgo.IntentsGuildMembers
 	dg.Identify.Intents |= discordgo.IntentsGuildMessageReactions
@@ -47,6 +48,8 @@ func main() {
 		fmt.Println("error opening connection,", err)
 		return
 	}
+
+	tucobot.RegisterCommands(dg)
 
 	defer func(dg *discordgo.Session) {
 		err := dg.Close()
