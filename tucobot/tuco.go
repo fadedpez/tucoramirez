@@ -94,7 +94,7 @@ func handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: "Duel Tuco",
+				Content: "So another bastard wants to take out Tuco. Everyone wants to take out Tuco! You better hope you win because no one shoots at Tuco and lives to tell about it!",
 				Components: []discordgo.MessageComponent{
 					&discordgo.ActionsRow{
 						Components: []discordgo.MessageComponent{
@@ -126,11 +126,11 @@ func handleButtonClick(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		userString := strconv.Itoa(userRoll)
 
 		if tucoRoll > userRoll {
-			duelResult = "Hurrah! Come back when you learn how to shoot cabrón! (Tuco: " + tucoString + " ; " + userMention + " " + userString + ") %s"
+			duelResult = "Hurrah! Come back when you learn how to shoot cabrón! (Tuco: " + tucoString + " ; " + userMention + ": " + userString + ")"
 		} else if tucoRoll < userRoll {
-			duelResult = "You pig! You haven't seen the last of Tuco! (Tuco: " + tucoString + " ; " + userMention + " " + userString + ") %s"
+			duelResult = "You pig! You haven't seen the last of Tuco! (Tuco: " + tucoString + " ; " + userMention + ": " + userString + ")"
 		} else {
-			duelResult = "It seems we live to fight another day, amigo. (Tuco: " + tucoString + " ; " + userMention + " " + userString + ") %s"
+			duelResult = "It seems we live to fight another day, amigo. (Tuco: " + tucoString + " ; " + userMention + ": " + userString + ")"
 		}
 	}
 
