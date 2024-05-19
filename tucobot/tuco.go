@@ -115,31 +115,29 @@ func handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 }
 
 func handleButtonClick(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	duelResult := "che?"
 	switch i.MessageComponentData().CustomID {
 	case "draw":
 		tucoRoll := diceRoll()
 		userRoll := diceRoll()
-		duelResult := "che?"
 		userMention := fmt.Sprintf("<@%s>", i.Member.User.ID)
 
 		tucoString := strconv.Itoa(tucoRoll)
 		userString := strconv.Itoa(userRoll)
 
 		if tucoRoll > userRoll {
-			duelResult = "Hurrah! Come back when you learn how to shoot cabrón! (Tuco: " + tucoString + " ; %s: " + userString + ")" + userMention
+			duelResult = "Hurrah! Come back when you learn how to shoot cabrón! (Tuco: " + tucoString + " ; " + userMention + " " + userString + ") %s"
 		} else if tucoRoll < userRoll {
-			duelResult = "You pig! You haven't seen the last of Tuco! (Tuco: " + tucoString + " ; %s: " + userString + ")" + userMention
+			duelResult = "You pig! You haven't seen the last of Tuco! (Tuco: " + tucoString + " ; " + userMention + " " + userString + ") %s"
 		} else {
-			duelResult = "It seems we live to fight another day, amigo. (Tuco: " + tucoString + " ; %s: " + userString + ")" + userMention
+			duelResult = "It seems we live to fight another day, amigo. (Tuco: " + tucoString + " ; " + userMention + " " + userString + ") %s"
 		}
-
-		_, _ = s.ChannelMessageSend(i.ChannelID, duelResult)
 	}
 
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: "What goes here?",
+			Content: duelResult,
 		},
 	})
 
