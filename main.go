@@ -1,74 +1,49 @@
 package main
 
 import (
-	"flag"
 	"fmt"
-	"github.com/bwmarrin/discordgo"
-	"github.com/fadedpez/tucoramirez/tucobot"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
+
+	"github.com/bwmarrin/discordgo"
+	"github.com/fadedpez/tucoramirez/tucobot"
 )
 
-var Token string
-
-func init() {
-	flag.StringVar(&Token, "token", "", "Bot Token")
-	flag.Parse()
-}
-
 func main() {
-	if Token == "" {
-		panic("Token is required")
-	}
-
-	dg, err := discordgo.New("Bot " + Token)
-	if err != nil {
-		fmt.Println("error creating Discord session,", err)
+	token := os.Getenv("DISCORD_TOKEN")
+	if token == "" {
+		fmt.Println("No token provided. Please set the DISCORD_TOKEN environment variable.")
 		return
 	}
 
-	dg.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
-		log.Printf("Logged in as: %s\n", s.State.User.Username)
+	// Create a new Discord session
+	dg, err := discordgo.New("Bot " + token)
+	if err != nil {
+		fmt.Println("Error creating Discord session:", err)
+		return
+	}
+
+	// Add handlers
+	dg.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		tucobot.InteractionCreate(s, i)
 	})
 
-	// dg.AddHandler(messageCreate) // This is the old way of doing things
-
-	dg.AddHandler(tucobot.MessageCreate)
-	dg.AddHandler(tucobot.InteractionCreate)
-
-	dg.Identify.Intents |= discordgo.IntentsGuildMembers
-	dg.Identify.Intents |= discordgo.IntentsGuildMessageReactions
-	dg.Identify.Intents |= discordgo.IntentsGuilds
-
+	// Open websocket connection
 	err = dg.Open()
 	if err != nil {
-		fmt.Println("error opening connection,", err)
+		fmt.Println("Error opening connection:", err)
 		return
 	}
 
+	// Register commands
 	tucobot.RegisterCommands(dg)
 
-	defer func(dg *discordgo.Session) {
-		err := dg.Close()
-		if err != nil {
-			fmt.Println("error closing connection,", err)
-			return
-		}
-	}(dg)
-
-	fmt.Println("Bot is now running.  Press CTRL-C to exit.")
+	fmt.Println("Tuco is now running. Press CTRL-C to exit.")
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
+	<-sc
 
-	for {
-		select {
-		case <-sc:
-			return
-		default:
-		}
-		time.Sleep(1 * time.Second)
-	}
+	// Clean up
+	dg.Close()
 }
