@@ -13,11 +13,20 @@ import (
 type sessionHandler interface {
 	InteractionRespond(i *discordgo.Interaction, r *discordgo.InteractionResponse, options ...discordgo.RequestOption) error
 	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	FollowupMessageCreate(interaction *discordgo.Interaction, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
 }
 
 const (
 	maxPlayers = 6
 	joinTimeout = 30 * time.Second
+	autoStartTimeout = 30 * time.Second
+)
+
+// Game states
+const (
+	Waiting  = "WAITING"
+	Playing  = "PLAYING"
+	Finished = "FINISHED"
 )
 
 // Player represents a player in the game
@@ -30,13 +39,13 @@ type Player struct {
 	Busted   bool
 }
 
-// Game state
+// BlackjackGame represents a game of blackjack
 type BlackjackGame struct {
 	Deck        *cards.Deck
 	Players     []*Player
+	PlayerHand  []cards.Card
 	DealerHand  []cards.Card
-	GameStarted bool
-	GameOver    bool
+	GameState   string
 	CreatorID   string
 	ChannelID   string
 	CreatedAt   time.Time
@@ -44,523 +53,395 @@ type BlackjackGame struct {
 
 var activeGames = make(map[string]*BlackjackGame) // key is channelID
 
+// StartBlackjackGame starts a new game of blackjack
 func StartBlackjackGame(s sessionHandler, i *discordgo.InteractionCreate) {
 	channelID := i.ChannelID
 
 	// Check if there's already a game in this channel
-	if _, exists := activeGames[channelID]; exists {
-		handleError(s, i, "A game is already in progress in this channel!", nil)
-		return
+	if game, exists := activeGames[channelID]; exists {
+		if game.GameState == Finished {
+			// Clean up finished game
+			delete(activeGames, channelID)
+		} else {
+			handleError(s, i, "A game is already in progress in this channel!", nil)
+			return
+		}
 	}
 
-	// Create a new deck
+	// Create and shuffle new deck
 	deck, err := cards.NewDeck()
 	if err != nil {
 		handleError(s, i, "Failed to create deck", err)
 		return
 	}
+	deck.Shuffle()
 
-	// Shuffle the deck
-	if err := deck.Shuffle(); err != nil {
-		handleError(s, i, "Failed to shuffle deck", err)
-		return
+	// Create initial player
+	creator := &Player{
+		ID:       i.Member.User.ID,
+		Username: i.Member.User.Username,
 	}
-	
+
 	game := &BlackjackGame{
 		Deck:      deck,
-		Players:   make([]*Player, 0),
+		Players:   []*Player{creator},
+		GameState: Waiting,
 		CreatorID: i.Member.User.ID,
 		ChannelID: channelID,
 		CreatedAt: time.Now(),
 	}
-
-	// Add the creator as the first player
-	game.Players = append(game.Players, &Player{
-		ID:       i.Member.User.ID,
-		Username: i.Member.User.Username,
-	})
-
-	// Store the game
 	activeGames[channelID] = game
 
-	// Create buttons for joining and starting
-	buttons := getJoinButtons()
-
-	// Send initial game state
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	// Create the initial game message with Join and Start buttons
+	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: formatGameState(game, false),
+			Content: fmt.Sprintf("🎲 Blackjack Game Created! 🎲\nPlayers (%d/%d):\n- %s\n\nClick Join to join the game, or Start to begin with current players.", len(game.Players), maxPlayers, creator.Username),
 			Components: []discordgo.MessageComponent{
 				discordgo.ActionsRow{
-					Components: buttons,
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Join Game",
+							Style:    discordgo.SuccessButton,
+							CustomID: "blackjack_join",
+						},
+						discordgo.Button{
+							Label:    "Start Game",
+							Style:    discordgo.PrimaryButton,
+							CustomID: "blackjack_start",
+						},
+					},
 				},
 			},
 		},
-	}); err != nil {
-		handleError(s, i, "Failed to start game", err)
-		delete(activeGames, channelID)
+	})
+
+	if err != nil {
+		fmt.Printf("Error sending game creation message: %v\n", err)
 		return
 	}
 
-	// Start a goroutine to handle game timeout
+	// Start auto-start timer
 	go func() {
-		time.Sleep(joinTimeout)
-		if game, exists := activeGames[channelID]; exists && !game.GameStarted {
-			delete(activeGames, channelID)
-			s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-				Content: "Game has timed out due to inactivity.",
-			})
+		time.Sleep(autoStartTimeout)
+
+		// Check if game still exists and is in waiting state
+		game, exists := activeGames[channelID]
+		if !exists || game.GameState != Waiting {
+			return
+		}
+
+		// Send auto-start message
+		_, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+			Content: "30 seconds have passed. Starting game automatically!",
+		})
+		if err != nil {
+			fmt.Printf("Error sending auto-start message: %v\n", err)
+			return
+		}
+
+		// Start the game
+		game.GameState = Playing
+		
+		// Draw initial cards for each player
+		for _, player := range game.Players {
+			// Draw two cards for the player
+			card1, err := game.Deck.Draw()
+			if err != nil {
+				fmt.Printf("Error drawing card: %v\n", err)
+				return
+			}
+			card2, err := game.Deck.Draw()
+			if err != nil {
+				fmt.Printf("Error drawing card: %v\n", err)
+				return
+			}
+			player.Hand = []cards.Card{card1, card2}
+			player.Score = calculateScore(player.Hand)
+		}
+		
+		// Draw dealer's card
+		dealerCard, err := game.Deck.Draw()
+		if err != nil {
+			fmt.Printf("Error drawing dealer card: %v\n", err)
+			return
+		}
+		game.DealerHand = []cards.Card{dealerCard}
+
+		// Send game state message
+		msg := formatGameState(game)
+		_, err = s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
+			Content: msg,
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Hit",
+							Style:    discordgo.PrimaryButton,
+							CustomID: "blackjack_hit",
+						},
+						discordgo.Button{
+							Label:    "Stand",
+							Style:    discordgo.DangerButton,
+							CustomID: "blackjack_stand",
+						},
+					},
+				},
+			},
+		})
+		if err != nil {
+			fmt.Printf("Error sending game state message: %v\n", err)
 		}
 	}()
 }
 
+// HandleBlackjackButton handles button interactions for blackjack
 func HandleBlackjackButton(s sessionHandler, i *discordgo.InteractionCreate) {
-	// Get the game
+	// Get the game for this channel
 	game, exists := activeGames[i.ChannelID]
 	if !exists {
-		handleError(s, i, "No active game found in this channel. Start a new game with /blackjack", nil)
+		handleError(s, i, "No game in progress in this channel!", nil)
 		return
 	}
 
-	// Handle the button press
 	switch i.MessageComponentData().CustomID {
 	case "blackjack_join":
 		handleJoin(s, i, game)
 	case "blackjack_start":
-		handleStart(s, i, game)
+		startGame(s, i, game)
 	case "blackjack_hit":
 		handleHit(s, i, game)
 	case "blackjack_stand":
 		handleStand(s, i, game)
+	default:
+		handleError(s, i, "Unknown button interaction", nil)
 	}
 }
 
+// handleJoin handles a player joining the game
 func handleJoin(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
-	if game.GameStarted {
+	if game.GameState != Waiting {
 		handleError(s, i, "Game has already started!", nil)
-		return
-	}
-
-	if len(game.Players) >= maxPlayers {
-		handleError(s, i, "Game is full! Maximum 6 players.", nil)
 		return
 	}
 
 	// Check if player is already in the game
+	playerID := i.Member.User.ID
 	for _, p := range game.Players {
-		if p.ID == i.Member.User.ID {
-			// Send an ephemeral message instead of updating the game state
-			err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{
-					Content: "You're already in this game!",
-					Flags: discordgo.MessageFlagsEphemeral,
-				},
-			})
-			if err != nil {
-				fmt.Printf("Error sending ephemeral message: %v\n", err)
-			}
+		if p.ID == playerID {
+			handleError(s, i, "You are already in the game!", nil)
 			return
 		}
 	}
 
-	// Add the player
-	game.Players = append(game.Players, &Player{
-		ID:       i.Member.User.ID,
-		Username: i.Member.User.Username,
-	})
+	// Check if game is full
+	if len(game.Players) >= maxPlayers {
+		handleError(s, i, "Game is full!", nil)
+		return
+	}
 
-	// Update the game state
-	buttons := getJoinButtons()
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	// Add the new player
+	newPlayer := &Player{
+		ID:       playerID,
+		Username: i.Member.User.Username,
+	}
+	game.Players = append(game.Players, newPlayer)
+
+	// Update the message with current players
+	var playerList strings.Builder
+	for _, p := range game.Players {
+		playerList.WriteString("- " + p.Username + "\n")
+	}
+
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
 		Data: &discordgo.InteractionResponseData{
-			Content: formatGameState(game, false),
+			Content: fmt.Sprintf("🎲 Blackjack Game Created! 🎲\nPlayers (%d/%d):\n%s\nClick Join to join the game, or Start to begin with current players.", 
+				len(game.Players), maxPlayers, playerList.String()),
 			Components: []discordgo.MessageComponent{
 				discordgo.ActionsRow{
-					Components: buttons,
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Join Game",
+							Style:    discordgo.SuccessButton,
+							CustomID: "blackjack_join",
+							Disabled: len(game.Players) >= maxPlayers,
+						},
+						discordgo.Button{
+							Label:    "Start Game",
+							Style:    discordgo.PrimaryButton,
+							CustomID: "blackjack_start",
+						},
+					},
 				},
 			},
 		},
-	}); err != nil {
-		handleError(s, i, "Failed to update game state", err)
-		return
+	})
+
+	if err != nil {
+		fmt.Printf("Error updating game message: %v\n", err)
 	}
 }
 
-func handleStart(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
-	if game.GameStarted {
+// startGame starts the actual game after initialization
+func startGame(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
+	if game.GameState != Waiting {
 		handleError(s, i, "Game has already started!", nil)
 		return
 	}
 
-	if i.Member.User.ID != game.CreatorID {
-		handleError(s, i, "Only the game creator can start the game!", nil)
-		return
-	}
-
-	if len(game.Players) < 1 {
-		handleError(s, i, "Need at least one player to start!", nil)
-		return
-	}
-
-	game.GameStarted = true
-
-	// Deal initial cards to all players
+	// Start the game
+	game.GameState = Playing
+	
+	// Draw initial cards for each player
 	for _, player := range game.Players {
-		for j := 0; j < 2; j++ {
-			card, err := game.Deck.Draw()
-			if err != nil {
-				handleError(s, i, "Failed to draw card", err)
-				return
-			}
-			player.Hand = append(player.Hand, card)
-		}
-		player.Score = calculateScore(player.Hand)
-	}
-
-	// Deal dealer's cards
-	for j := 0; j < 2; j++ {
-		card, err := game.Deck.Draw()
+		// Draw two cards for the player
+		card1, err := game.Deck.Draw()
 		if err != nil {
 			handleError(s, i, "Failed to draw card", err)
 			return
 		}
-		game.DealerHand = append(game.DealerHand, card)
-	}
-
-	// Update the game state
-	buttons := getGameButtons()
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{
-			Content: formatGameState(game, false),
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{
-					Components: buttons,
-				},
-			},
-		},
-	}); err != nil {
-		handleError(s, i, "Failed to update game state", err)
-		return
-	}
-}
-
-func handleHit(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
-	if !game.GameStarted {
-		handleError(s, i, "Game hasn't started yet!", nil)
-		return
-	}
-
-	// Find the player
-	var player *Player
-	for _, p := range game.Players {
-		if p.ID == i.Member.User.ID {
-			player = p
-			break
-		}
-	}
-
-	if player == nil {
-		handleError(s, i, "You're not in this game!", nil)
-		return
-	}
-
-	if player.Stood || player.Busted {
-		// Send an ephemeral message instead of updating game state
-		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: fmt.Sprintf("Your turn is already over! %s", getPlayerStatusMessage(player)),
-				Flags:   discordgo.MessageFlagsEphemeral,
-			},
-		})
+		card2, err := game.Deck.Draw()
 		if err != nil {
-			fmt.Printf("Error sending ephemeral message: %v\n", err)
+			handleError(s, i, "Failed to draw card", err)
+			return
 		}
-		return
+		player.Hand = []cards.Card{card1, card2}
+		player.Score = calculateScore(player.Hand)
 	}
-
-	// Draw a card
-	card, err := game.Deck.Draw()
+	
+	// Draw dealer's card
+	dealerCard, err := game.Deck.Draw()
 	if err != nil {
-		handleError(s, i, "Failed to draw card", err)
+		handleError(s, i, "Failed to draw dealer's card", err)
 		return
 	}
+	game.DealerHand = []cards.Card{dealerCard}
 
-	player.Hand = append(player.Hand, card)
-	player.Score = calculateScore(player.Hand)
+	// Update game display
+	updateGameDisplay(s, i, game)
+}
 
-	if player.Score > 21 {
-		player.Busted = true
-		// Check if game is over
-		game.GameOver = checkGameOver(game)
-	}
+// updateGameDisplay updates the game display message
+func updateGameDisplay(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
+	var content string
+	var components []discordgo.MessageComponent
 
-	// If game is over, reveal dealer's cards and play out dealer's hand
-	if game.GameOver {
-		playDealerHand(game)
-		gameSummary := determineGameResults(game)
-		
-		// First update the interaction response without buttons
-		if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseUpdateMessage,
-			Data: &discordgo.InteractionResponseData{
-				Content: formatGameState(game, true),
-				Components: []discordgo.MessageComponent{}, // Empty components removes the buttons
-			},
-		}); err != nil {
-			handleError(s, i, "Failed to update game state", err)
-			return
-		}
-
-		// Then send the final game summary as a new message
-		if _, err := s.ChannelMessageSendComplex(game.ChannelID, &discordgo.MessageSend{
-			Content: formatGameState(game, true) + gameSummary,
-		}); err != nil {
-			handleError(s, i, "Failed to send game summary", err)
-			return
-		}
-
-		delete(activeGames, game.ChannelID)
-		return
-	}
-
-	// Update the game state
-	buttons := getGameButtons()
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{
-			Content: formatGameState(game, game.GameOver),
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{
-					Components: buttons,
+	switch game.GameState {
+	case Playing:
+		content = formatGameState(game)
+		components = []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						Label:    "Hit",
+						Style:    discordgo.PrimaryButton,
+						CustomID: "blackjack_hit",
+					},
+					discordgo.Button{
+						Label:    "Stand",
+						Style:    discordgo.SecondaryButton,
+						CustomID: "blackjack_stand",
+					},
 				},
 			},
-		},
-	}); err != nil {
-		handleError(s, i, "Failed to update game state", err)
-		return
-	}
-}
-
-func handleStand(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
-	if !game.GameStarted {
-		handleError(s, i, "Game hasn't started yet!", nil)
-		return
-	}
-
-	// Find the player
-	var player *Player
-	for _, p := range game.Players {
-		if p.ID == i.Member.User.ID {
-			player = p
-			break
 		}
+	case Finished:
+		content = formatGameState(game) + "\n" + determineWinner(game)
+		// No components needed for finished game
 	}
 
-	if player == nil {
-		handleError(s, i, "You're not in this game!", nil)
-		return
-	}
-
-	if player.Stood || player.Busted {
-		// Send an ephemeral message instead of updating game state
-		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Content: fmt.Sprintf("Your turn is already over! %s", getPlayerStatusMessage(player)),
-				Flags:   discordgo.MessageFlagsEphemeral,
-			},
-		})
-		if err != nil {
-			fmt.Printf("Error sending ephemeral message: %v\n", err)
-		}
-		return
-	}
-
-	player.Stood = true
-
-	// Check if game is over
-	game.GameOver = checkGameOver(game)
-
-	// If game is over, reveal dealer's cards and play out dealer's hand
-	if game.GameOver {
-		playDealerHand(game)
-		gameSummary := determineGameResults(game)
-		
-		// First update the interaction response without buttons
-		if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseUpdateMessage,
-			Data: &discordgo.InteractionResponseData{
-				Content: formatGameState(game, true),
-				Components: []discordgo.MessageComponent{}, // Empty components removes the buttons
-			},
-		}); err != nil {
-			handleError(s, i, "Failed to update game state", err)
-			return
-		}
-
-		// Then send the final game summary as a new message
-		if _, err := s.ChannelMessageSendComplex(game.ChannelID, &discordgo.MessageSend{
-			Content: formatGameState(game, true) + gameSummary,
-		}); err != nil {
-			handleError(s, i, "Failed to send game summary", err)
-			return
-		}
-
-		delete(activeGames, game.ChannelID)
-		return
-	}
-
-	// Update the game state with buttons for ongoing game
-	buttons := getGameButtons()
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
 		Data: &discordgo.InteractionResponseData{
-			Content: formatGameState(game, game.GameOver),
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{
-					Components: buttons,
-				},
-			},
+			Content:    content,
+			Components: components,
 		},
-	}); err != nil {
-		handleError(s, i, "Failed to update game state", err)
-		return
+	})
+	if err != nil {
+		handleError(s, i, "Error updating game display", err)
 	}
 }
 
-func playDealerHand(game *BlackjackGame) {
-	// Dealer draws until 17 or higher
-	for calculateScore(game.DealerHand) < 17 {
-		card, err := game.Deck.Draw()
-		if err != nil {
-			return // If we can't draw, just return
-		}
-		game.DealerHand = append(game.DealerHand, card)
-	}
-}
-
-func checkGameOver(game *BlackjackGame) bool {
-	allDone := true
-	for _, p := range game.Players {
-		if !p.Stood && !p.Busted {
-			allDone = false
-			break
-		}
-	}
-	return allDone
-}
-
-func getJoinButtons() []discordgo.MessageComponent {
-	return []discordgo.MessageComponent{
-		discordgo.Button{
-			Label:    "Join Game",
-			Style:    2, // Primary
-			CustomID: "blackjack_join",
-		},
-		discordgo.Button{
-			Label:    "Start Game",
-			Style:    3, // Success
-			CustomID: "blackjack_start",
-		},
-	}
-}
-
-func getGameButtons() []discordgo.MessageComponent {
-	return []discordgo.MessageComponent{
-		discordgo.Button{
-			Label:    "Hit",
-			Style:    2, // Primary
-			CustomID: "blackjack_hit",
-		},
-		discordgo.Button{
-			Label:    "Stand",
-			Style:    2, // Secondary
-			CustomID: "blackjack_stand",
-		},
-	}
-}
-
-func formatGameState(game *BlackjackGame, showAll bool) string {
+// formatGameState formats the game state message
+func formatGameState(game *BlackjackGame) string {
 	var sb strings.Builder
-	sb.WriteString("🎲 Blackjack Game 🎲\n\n")
+	sb.WriteString("🎲 **Blackjack Game** 🎲\n\n")
 
-	if !game.GameStarted {
-		sb.WriteString(fmt.Sprintf("Players (%d/6):\n", len(game.Players)))
-		for _, p := range game.Players {
-			sb.WriteString(fmt.Sprintf("• %s\n", p.Username))
-		}
-		sb.WriteString("\nWaiting for more players to join...\n")
-		return sb.String()
-	}
-
-	// Dealer's hand
+	// Show dealer's hand
 	sb.WriteString("Dealer's hand: ")
-	if showAll {
+	if game.GameState == Finished {
 		for _, card := range game.DealerHand {
 			sb.WriteString(card.String() + " ")
 		}
 		sb.WriteString(fmt.Sprintf("(Score: %d)", calculateScore(game.DealerHand)))
 	} else {
-		sb.WriteString(game.DealerHand[0].String() + " [Hidden Card]")
+		sb.WriteString(game.DealerHand[0].String() + " ?")
 	}
 	sb.WriteString("\n\n")
 
-	// Players' hands
-	for _, p := range game.Players {
-		sb.WriteString(fmt.Sprintf("%s's hand: ", p.Username))
-		for _, card := range p.Hand {
+	// Show each player's hand
+	for _, player := range game.Players {
+		sb.WriteString(fmt.Sprintf("**%s's hand**: ", player.Username))
+		for _, card := range player.Hand {
 			sb.WriteString(card.String() + " ")
 		}
-		sb.WriteString(fmt.Sprintf("(Score: %d)", calculateScore(p.Hand)))
-		if p.Busted {
-			sb.WriteString(" 🚫 BUST!")
-		} else if p.Stood {
+		sb.WriteString(fmt.Sprintf("(Score: %d)", player.Score))
+		if player.Busted {
+			sb.WriteString(" 💥 BUST!")
+		} else if player.Stood {
 			sb.WriteString(" 🛑 STAND")
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString("\n")
 
 	return sb.String()
 }
 
-func determineGameResults(game *BlackjackGame) string {
+// determineWinner determines the winner of the game
+func determineWinner(game *BlackjackGame) string {
+	var sb strings.Builder
+	sb.WriteString("🎲 **Game Summary** 🎲\n\n")
+
+	// Show dealer's final hand
 	dealerScore := calculateScore(game.DealerHand)
-	dealerBusted := dealerScore > 21
-
-	var summary strings.Builder
-	summary.WriteString("\n🎲 **Game Summary** 🎲\n")
-	summary.WriteString(fmt.Sprintf("Dealer's final hand: %d\n", dealerScore))
-	if dealerBusted {
-		summary.WriteString("Dealer busted! 💥\n")
+	sb.WriteString("**Dealer's hand**: ")
+	for _, card := range game.DealerHand {
+		sb.WriteString(card.String() + " ")
 	}
-	summary.WriteString("\nResults:\n")
+	sb.WriteString(fmt.Sprintf("(Score: %d)", dealerScore))
+	if dealerScore > 21 {
+		sb.WriteString(" 💥 BUST!")
+	}
+	sb.WriteString("\n\n")
 
-	for _, p := range game.Players {
-		playerScore := calculateScore(p.Hand)
-		result := "Lost 😢"
-		
-		if p.Busted {
-			result = "Busted 💥"
-		} else if dealerBusted && !p.Busted {
-			result = "Won! 🎉"
-		} else if !p.Busted && playerScore > dealerScore {
-			result = "Won! 🎉"
-		} else if !p.Busted && playerScore == dealerScore {
-			result = "Push 🤝"
+	// Show each player's result
+	sb.WriteString("**Player Results**:\n")
+	for _, player := range game.Players {
+		sb.WriteString(fmt.Sprintf("• %s: ", player.Username))
+		for _, card := range player.Hand {
+			sb.WriteString(card.String() + " ")
 		}
-		
-		summary.WriteString(fmt.Sprintf("%s: %d - %s\n", p.Username, playerScore, result))
+		sb.WriteString(fmt.Sprintf("(Score: %d)", player.Score))
+
+		if player.Busted {
+			sb.WriteString(" 💥 BUST!")
+		} else if dealerScore > 21 {
+			sb.WriteString(" 🎉 WIN!")
+		} else if player.Score > dealerScore {
+			sb.WriteString(" 🎉 WIN!")
+		} else if player.Score == dealerScore {
+			sb.WriteString(" 🤝 PUSH")
+		} else {
+			sb.WriteString(" 😢 LOSE")
+		}
+		sb.WriteString("\n")
 	}
-	
-	return summary.String()
+
+	return sb.String()
 }
 
+// calculateScore calculates the score of a hand
 func calculateScore(hand []cards.Card) int {
 	score := 0
 	aces := 0
@@ -583,29 +464,216 @@ func calculateScore(hand []cards.Card) int {
 	return score
 }
 
+// handleError handles error responses
 func handleError(s sessionHandler, i *discordgo.InteractionCreate, msg string, err error) {
 	errMsg := msg
 	if err != nil {
 		errMsg = fmt.Sprintf("%s: %v", msg, err)
 	}
 	
-	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
+	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content: errMsg,
-			Components: []discordgo.MessageComponent{},
+			Flags:   discordgo.MessageFlagsEphemeral,
 		},
-	}); err != nil {
-		fmt.Printf("Error sending error response: %v\n", err)
+	})
+	if err != nil {
+		fmt.Printf("Error sending error message: %v\n", err)
 	}
 }
 
-func getPlayerStatusMessage(p *Player) string {
-	if p.Busted {
-		return "You busted! 💥"
+// handleHit handles the hit action
+func handleHit(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
+	if game.GameState != Playing {
+		handleError(s, i, "Game is not in progress!", nil)
+		return
 	}
-	if p.Stood {
-		return "You stood! 🤚"
+
+	// Find the player who clicked
+	var currentPlayer *Player
+	for _, p := range game.Players {
+		if p.ID == i.Member.User.ID {
+			currentPlayer = p
+			break
+		}
 	}
-	return ""
+
+	if currentPlayer == nil {
+		handleError(s, i, "You are not in this game!", nil)
+		return
+	}
+
+	if currentPlayer.Stood || currentPlayer.Busted {
+		handleError(s, i, "You cannot hit - you have already stood or busted!", nil)
+		return
+	}
+
+	// Draw a card
+	card, err := game.Deck.Draw()
+	if err != nil {
+		handleError(s, i, "Failed to draw card", err)
+		return
+	}
+	currentPlayer.Hand = append(currentPlayer.Hand, card)
+	currentPlayer.Score = calculateScore(currentPlayer.Hand)
+
+	// Check for bust
+	if currentPlayer.Score > 21 {
+		currentPlayer.Busted = true
+		
+		// Check if all players are done
+		allDone := true
+		for _, p := range game.Players {
+			if !p.Stood && !p.Busted {
+				allDone = false
+				break
+			}
+		}
+
+		if allDone {
+			game.GameState = Finished
+			playDealerHand(game)
+		}
+	}
+
+	// Update game display
+	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{
+			Content: formatGameState(game),
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Hit",
+							Style:    discordgo.PrimaryButton,
+							CustomID: "blackjack_hit",
+							Disabled: game.GameState == Finished,
+						},
+						discordgo.Button{
+							Label:    "Stand",
+							Style:    discordgo.DangerButton,
+							CustomID: "blackjack_stand",
+							Disabled: game.GameState == Finished,
+						},
+					},
+				},
+			},
+		},
+	})
+
+	if err != nil {
+		fmt.Printf("Error updating game display: %v\n", err)
+		return
+	}
+
+	// If game is finished, show summary and clean up
+	if game.GameState == Finished {
+		_, err = s.ChannelMessageSendComplex(game.ChannelID, &discordgo.MessageSend{
+			Content: determineWinner(game),
+		})
+		if err != nil {
+			fmt.Printf("Error sending game summary: %v\n", err)
+		}
+		delete(activeGames, game.ChannelID)
+	}
+}
+
+// handleStand handles the stand action
+func handleStand(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
+	if game.GameState != Playing {
+		handleError(s, i, "Game is not in progress!", nil)
+		return
+	}
+
+	// Find the player who clicked
+	var currentPlayer *Player
+	for _, p := range game.Players {
+		if p.ID == i.Member.User.ID {
+			currentPlayer = p
+			break
+		}
+	}
+
+	if currentPlayer == nil {
+		handleError(s, i, "You are not in this game!", nil)
+		return
+	}
+
+	if currentPlayer.Stood || currentPlayer.Busted {
+		handleError(s, i, "You have already stood or busted!", nil)
+		return
+	}
+
+	currentPlayer.Stood = true
+
+	// Check if all players are done
+	allDone := true
+	for _, p := range game.Players {
+		if !p.Stood && !p.Busted {
+			allDone = false
+			break
+		}
+	}
+
+	if allDone {
+		game.GameState = Finished
+		playDealerHand(game)
+	}
+
+	// Update game display
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{
+			Content: formatGameState(game),
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Hit",
+							Style:    discordgo.PrimaryButton,
+							CustomID: "blackjack_hit",
+							Disabled: game.GameState == Finished,
+						},
+						discordgo.Button{
+							Label:    "Stand",
+							Style:    discordgo.DangerButton,
+							CustomID: "blackjack_stand",
+							Disabled: game.GameState == Finished,
+						},
+					},
+				},
+			},
+		},
+	})
+
+	if err != nil {
+		fmt.Printf("Error updating game display: %v\n", err)
+		return
+	}
+
+	// If game is finished, show summary and clean up
+	if game.GameState == Finished {
+		_, err = s.ChannelMessageSendComplex(game.ChannelID, &discordgo.MessageSend{
+			Content: determineWinner(game),
+		})
+		if err != nil {
+			fmt.Printf("Error sending game summary: %v\n", err)
+		}
+		delete(activeGames, game.ChannelID)
+	}
+}
+
+// playDealerHand plays out the dealer's hand
+func playDealerHand(game *BlackjackGame) {
+	// Dealer must hit on 16 and stand on 17
+	for calculateScore(game.DealerHand) < 17 {
+		card, err := game.Deck.Draw()
+		if err != nil {
+			fmt.Printf("Error drawing dealer card: %v\n", err)
+			return
+		}
+		game.DealerHand = append(game.DealerHand, card)
+	}
 }
