@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -17,12 +18,14 @@ import (
 type sessionHandler interface {
 	// Command registration
 	ApplicationCommandCreate(appID, guildID string, cmd *discordgo.ApplicationCommand, options ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error)
+	// Command listing
+	ApplicationCommands(appID, guildID string, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error)
+	// Command deletion
+	ApplicationCommandDelete(appID, guildID, cmdID string, options ...discordgo.RequestOption) error
 	// Interaction responses
 	InteractionRespond(i *discordgo.Interaction, r *discordgo.InteractionResponse, options ...discordgo.RequestOption) error
 	// Message sending
 	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
-	// Command deletion
-	ApplicationCommandDelete(appID, guildID, cmdID string, options ...discordgo.RequestOption) error
 }
 
 // Commands
@@ -30,147 +33,174 @@ var commands = []*discordgo.ApplicationCommand{
 	{
 		Name:        "dueltuco",
 		Description: "Duel Tuco",
+		// Ensure command is available in DMs and servers
+		DMPermission: new(bool),
 	},
 	{
 		Name:        "blackjack",
 		Description: "Start a game of blackjack with Tuco",
+		// Ensure command is available in DMs and servers
+		DMPermission: new(bool),
 	},
 }
 
 // RegisterCommands registers all slash commands with Discord
-func RegisterCommands(s sessionHandler, appID string, guildID string) {
+func RegisterCommands(s sessionHandler, appID string, guildID string) error {
+	fmt.Printf("Starting command registration with appID: %s, guildID: %s\n", appID, guildID)
 
-	fmt.Printf("Registering commands with appID: %s, guildID: %s\n", appID, guildID)
-	for _, command := range commands {
-		fmt.Printf("Registering command: %s\n", command.Name)
-		cmd, err := s.ApplicationCommandCreate(appID, guildID, command)
+	// First, clean up any existing commands
+	existingCommands, err := s.ApplicationCommands(appID, guildID)
+	if err != nil {
+		return fmt.Errorf("error fetching existing commands: %v", err)
+	}
 
-		if err != nil {
-			fmt.Printf("Cannot create command %s: %v\n", command.Name, err)
-		} else {
-			fmt.Printf("Successfully registered command %s with ID: %s\n", cmd.Name, cmd.ID)
+	fmt.Printf("Found %d existing commands\n", len(existingCommands))
+	for _, cmd := range existingCommands {
+		fmt.Printf("Deleting command: %s (%s)\n", cmd.Name, cmd.ID)
+		if err := s.ApplicationCommandDelete(appID, guildID, cmd.ID); err != nil {
+			fmt.Printf("Warning: error deleting command %s: %v\n", cmd.Name, err)
+			// Continue even if deletion fails
 		}
 	}
+
+	// Register new commands
+	fmt.Printf("Registering %d commands\n", len(commands))
+	registeredCommands := make(map[string]string)
+	for _, cmd := range commands {
+		fmt.Printf("Registering command: %s\n", cmd.Name)
+		registeredCmd, err := s.ApplicationCommandCreate(appID, guildID, cmd)
+		if err != nil {
+			return fmt.Errorf("error registering command %s: %v", cmd.Name, err)
+		}
+		registeredCommands[registeredCmd.Name] = registeredCmd.ID
+		fmt.Printf("Successfully registered command %s with ID: %s\n", registeredCmd.Name, registeredCmd.ID)
+	}
+
+	// Verify commands were registered
+	verifyCommands, err := s.ApplicationCommands(appID, guildID)
+	if err != nil {
+		return fmt.Errorf("error verifying commands: %v", err)
+	}
+
+	fmt.Printf("Verifying %d commands\n", len(verifyCommands))
+	for _, cmd := range verifyCommands {
+		if id, exists := registeredCommands[cmd.Name]; exists {
+			if id != cmd.ID {
+				return fmt.Errorf("command %s has mismatched ID. Expected %s, got %s", cmd.Name, id, cmd.ID)
+			}
+			fmt.Printf("Verified command %s (ID: %s)\n", cmd.Name, cmd.ID)
+		} else {
+			return fmt.Errorf("unexpected command found: %s (ID: %s)", cmd.Name, cmd.ID)
+		}
+	}
+
+	if len(verifyCommands) != len(commands) {
+		return fmt.Errorf("command count mismatch. Expected %d, got %d", len(commands), len(verifyCommands))
+	}
+
+	return nil
 }
 
 // CleanupCommands removes all registered commands
-func CleanupCommands(s *discordgo.Session, appID string, guildID string) {
-	fmt.Println("Cleaning up commands...")
-	registeredCommands, err := s.ApplicationCommands(appID, guildID)
+func CleanupCommands(s sessionHandler, appID string, guildID string) {
+	fmt.Printf("Starting command cleanup with appID: %s, guildID: %s\n", appID, guildID)
+
+	existingCommands, err := s.ApplicationCommands(appID, guildID)
 	if err != nil {
-		fmt.Printf("Could not fetch registered commands: %v\n", err)
+		fmt.Printf("Error fetching existing commands: %v\n", err)
 		return
 	}
 
-	for _, cmd := range registeredCommands {
+	fmt.Printf("Found %d commands to clean up\n", len(existingCommands))
+	for _, cmd := range existingCommands {
+		fmt.Printf("Deleting command: %s (%s)\n", cmd.Name, cmd.ID)
 		err := s.ApplicationCommandDelete(appID, guildID, cmd.ID)
 		if err != nil {
-			fmt.Printf("Cannot delete command %s: %v\n", cmd.Name, err)
-		} else {
-			fmt.Printf("Successfully deleted command %s\n", cmd.Name)
+			fmt.Printf("Error deleting command %s: %v\n", cmd.Name, err)
 		}
 	}
+
 	fmt.Println("Cleanup complete!")
 }
 
 // InteractionCreate handles all incoming Discord interactions
 func InteractionCreate(s sessionHandler, i *discordgo.InteractionCreate) {
 	fmt.Printf("Received interaction type: %v\n", i.Type)
-	var err error
+
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
 		fmt.Printf("Received command: %s\n", i.ApplicationCommandData().Name)
-		err = handleCommand(s, i)
+		switch i.ApplicationCommandData().Name {
+		case "dueltuco":
+			handleDuelTuco(s, i)
+		case "blackjack":
+			handleBlackjack(s, i)
+		default:
+			fmt.Printf("Unknown command: %s\n", i.ApplicationCommandData().Name)
+		}
 	case discordgo.InteractionMessageComponent:
 		fmt.Printf("Received button click: %s\n", i.MessageComponentData().CustomID)
-		err = handleButtonClick(s, i)
+		switch {
+		case strings.HasPrefix(i.MessageComponentData().CustomID, "blackjack_"):
+			games.HandleBlackjackButton(s, i)
+		case i.MessageComponentData().CustomID == "duel_button":
+			handleDuelButton(s, i)
+		default:
+			fmt.Printf("Unknown button: %s\n", i.MessageComponentData().CustomID)
+		}
 	}
+}
+
+func handleDuelTuco(s sessionHandler, i *discordgo.InteractionCreate) {
+	buttons := []discordgo.MessageComponent{
+		discordgo.Button{
+			Label:    "Duel!",
+			Style:    discordgo.PrimaryButton,
+			CustomID: "duel_button",
+		},
+	}
+
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content:    "¿Quieres pelear, eh? Click the button below to duel!",
+			Components: []discordgo.MessageComponent{discordgo.ActionsRow{Components: buttons}},
+		},
+	})
 	if err != nil {
-		fmt.Printf("Error handling interaction: %v\n", err)
+		fmt.Printf("Error responding to duel command: %v\n", err)
 	}
 }
 
-// Command handlers
-func handleCommand(s sessionHandler, i *discordgo.InteractionCreate) error {
-	switch i.ApplicationCommandData().Name {
-	case "dueltuco":
-		return handleDuelCommand(s, i)
-	case "blackjack":
-		return handleBlackjackCommand(s, i)
-	default:
-		return fmt.Errorf("unknown command %s", i.ApplicationCommandData().Name)
-	}
+func handleBlackjack(s sessionHandler, i *discordgo.InteractionCreate) {
+	fmt.Printf("Starting blackjack game for user: %s\n", i.Member.User.Username)
+	games.StartBlackjackGame(s, i)
 }
 
-func handleDuelCommand(s sessionHandler, i *discordgo.InteractionCreate) error {
-	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: "So another bastard wants to take out Tuco. Everyone wants to take out Tuco! You better hope you win because no one shoots at Tuco and lives to tell about it!",
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{
-						discordgo.Button{
-							Label:    "Draw!",
-							CustomID: "duel_button",
-							Style:    discordgo.PrimaryButton,
-						},
-					},
-				},
-			},
-		},
-	})
-}
+func handleDuelButton(s sessionHandler, i *discordgo.InteractionCreate) {
+	// Generate random number between 1 and 100
+	rand.Seed(time.Now().UnixNano())
+	userRoll := rand.Intn(100) + 1
+	tucoRoll := rand.Intn(100) + 1
 
-func handleBlackjackCommand(s sessionHandler, i *discordgo.InteractionCreate) error {
-	if err := games.StartBlackjackGame(s, i.ChannelID); err != nil {
-		return err
-	}
-
-	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: "¡Vamos a jugar blackjack! (Let's play blackjack!)",
-		},
-	})
-}
-
-// Button handlers
-func handleButtonClick(s sessionHandler, i *discordgo.InteractionCreate) error {
-	switch i.MessageComponentData().CustomID {
-	case "duel_button":
-		return handleDuelButton(s, i)
-	case "join_button", "deal_button", "hit_button", "stand_button":
-		return games.HandleButton(s, i)
-	default:
-		return fmt.Errorf("unknown button %s", i.MessageComponentData().CustomID)
-	}
-}
-
-func handleDuelButton(s sessionHandler, i *discordgo.InteractionCreate) error {
-	min := 1
-	max := 100
-	tucoRoll := min + rand.Intn(max-min)
-	userRoll := min + rand.Intn(max-min)
-	userMention := fmt.Sprintf("<@%s>", i.Member.User.ID)
-	tucoString := strconv.Itoa(tucoRoll)
-	userString := strconv.Itoa(userRoll)
-
-	var content string
-	if tucoRoll > userRoll {
-		content = fmt.Sprintf("Hurrah! Come back when you learn how to shoot cabrón! (Tuco: %s ; %s: %s)", tucoString, userMention, userString)
-	} else if tucoRoll < userRoll {
-		content = fmt.Sprintf("You pig! You haven't seen the last of Tuco! (Tuco: %s ; %s: %s)", tucoString, userMention, userString)
+	var result string
+	if userRoll > tucoRoll {
+		result = fmt.Sprintf("You win! 🎉\nYou rolled %d\nTuco rolled %d", userRoll, tucoRoll)
+	} else if userRoll < tucoRoll {
+		result = fmt.Sprintf("Tuco wins! 😈\nYou rolled %d\nTuco rolled %d", userRoll, tucoRoll)
 	} else {
-		content = fmt.Sprintf("It seems we live to fight another day, amigo. (Tuco: %s ; %s: %s)", tucoString, userMention, userString)
+		result = fmt.Sprintf("It's a tie! 🤝\nYou both rolled %d", userRoll)
 	}
 
-	return s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
 		Data: &discordgo.InteractionResponseData{
-			Content: content,
+			Content: result,
 		},
 	})
+	if err != nil {
+		fmt.Printf("Error responding to duel button: %v\n", err)
+	}
 }
 
 func MessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {

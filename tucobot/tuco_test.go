@@ -18,6 +18,10 @@ func (m *MockSession) ApplicationCommandCreate(appID, guildID string, cmd *disco
 	return cmd, nil
 }
 
+func (m *MockSession) ApplicationCommands(appID, guildID string, options ...discordgo.RequestOption) ([]*discordgo.ApplicationCommand, error) {
+	return m.commands, nil
+}
+
 func (m *MockSession) InteractionRespond(i *discordgo.Interaction, r *discordgo.InteractionResponse, options ...discordgo.RequestOption) error {
 	m.interactionResponse = r
 	return nil
