@@ -77,43 +77,119 @@ func main() {
 		return
 	}
 
-	// Add handlers
+	// Set required intents for the bot
+	dg.Identify.Intents = discordgo.IntentsAllWithoutPrivileged |
+		discordgo.IntentsGuildMembers |
+		discordgo.IntentsMessageContent
+
+	// Add handlers BEFORE opening the websocket
+	dg.AddHandler(func(s *discordgo.Session, r *discordgo.Ready) {
+		fmt.Printf("\nBot is ready! Logged in as: %s#%s\n", s.State.User.Username, s.State.User.Discriminator)
+		fmt.Printf("Bot ID: %s\n", s.State.User.ID)
+	})
+
 	dg.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
-		fmt.Printf("Received interaction from Discord\n")
+		fmt.Printf("\nReceived interaction from Discord\n")
+		fmt.Printf("Type: %v\n", i.Type)
+		if i.GuildID == "" {
+			fmt.Printf("Warning: Received interaction without guild ID\n")
+		} else {
+			fmt.Printf("Guild ID: %s\n", i.GuildID)
+		}
+		if i.Member != nil && i.Member.User != nil {
+			fmt.Printf("User: %s\n", i.Member.User.Username)
+		}
+		if i.Type == discordgo.InteractionApplicationCommand {
+			fmt.Printf("Command name: %s\n", i.ApplicationCommandData().Name)
+		}
 		tucobot.InteractionCreate(s, i)
 	})
-	dg.AddHandler(tucobot.MessageCreate)
 
-	// Set required intents for the bot
-	dg.Identify.Intents = discordgo.IntentsGuildMessages | 
-		discordgo.IntentsDirectMessages | 
-		discordgo.IntentsGuildMessageReactions | 
-		discordgo.IntentsGuildIntegrations |
-		discordgo.IntentsGuilds
+	dg.AddHandler(func(s *discordgo.Session, g *discordgo.GuildCreate) {
+		fmt.Printf("\nJoined guild: %s (ID: %s)\n", g.Name, g.ID)
+		
+		// Check bot permissions in guild
+		for _, member := range g.Members {
+			if member.User.ID == s.State.User.ID {
+				fmt.Printf("Bot permissions in guild: %v\n", member.Permissions)
+				break
+			}
+		}
+
+		// Register commands for this guild
+		if err := tucobot.RegisterCommands(s, appID, g.ID); err != nil {
+			fmt.Printf("Error registering commands for guild %s: %v\n", g.Name, err)
+		}
+	})
 
 	// Open websocket connection
+	fmt.Println("\nOpening Discord connection...")
 	err = dg.Open()
 	if err != nil {
 		fmt.Printf("Error opening connection: %v\n", err)
 		return
 	}
+	fmt.Printf("Connection opened successfully for bot: %s\n", dg.State.User.Username)
 
-	// Register commands globally (empty guildID means global)
-	fmt.Println("Registering commands globally...")
-	if err := tucobot.RegisterCommands(dg, appID, ""); err != nil {
-		fmt.Printf("Error registering commands: %v\n", err)
-		dg.Close()
+	// Get list of guilds the bot is in
+	guilds, err := dg.UserGuilds(100, "", "", false)
+	if err != nil {
+		fmt.Printf("Error getting guild list: %v\n", err)
 		return
 	}
-	fmt.Println("Commands registered successfully!")
 
-	fmt.Println("Tuco is now running. Press CTRL-C to exit.")
+	// Register commands for each guild
+	fmt.Printf("\nFound %d guilds to register commands for\n", len(guilds))
+	
+	// First, try to clean up any global commands
+	fmt.Println("Cleaning up any existing global commands...")
+	if err := tucobot.CleanupCommands(dg, appID, ""); err != nil {
+		fmt.Printf("Warning: error cleaning up global commands: %v\n", err)
+	}
+
+	// Then register for each guild
+	var registrationErrors []string
+	for _, g := range guilds {
+		fmt.Printf("\nProcessing guild: %s (ID: %s)\n", g.Name, g.ID)
+		
+		// First cleanup any existing commands in this guild
+		fmt.Printf("Cleaning up commands for guild %s...\n", g.Name)
+		if err := tucobot.CleanupCommands(dg, appID, g.ID); err != nil {
+			fmt.Printf("Warning: error cleaning up commands for guild %s: %v\n", g.Name, err)
+			// Continue anyway as the registration might still work
+		}
+
+		// Then register new commands
+		fmt.Printf("Registering commands for guild %s...\n", g.Name)
+		if err := tucobot.RegisterCommands(dg, appID, g.ID); err != nil {
+			errMsg := fmt.Sprintf("Error registering commands for guild %s: %v", g.Name, err)
+			fmt.Printf("%s\n", errMsg)
+			registrationErrors = append(registrationErrors, errMsg)
+			// Continue with other guilds even if one fails
+			continue
+		}
+		fmt.Printf("Successfully registered commands for guild: %s\n", g.Name)
+	}
+
+	if len(registrationErrors) > 0 {
+		fmt.Printf("\nWarning: Encountered %d errors during command registration:\n", len(registrationErrors))
+		for _, err := range registrationErrors {
+			fmt.Printf("- %s\n", err)
+		}
+		fmt.Println("\nThe bot will continue running, but some commands may not be available in all guilds.")
+	} else {
+		fmt.Println("\nSuccessfully registered commands in all guilds!")
+	}
+
+	fmt.Println("\nBot is now running. Press CTRL-C to exit.")
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 	<-sc
 
-	// Clean up
-	fmt.Println("Cleaning up before exit...")
-	tucobot.CleanupCommands(dg, appID, "")
+	// Cleanup before exit
+	fmt.Println("Cleaning up commands before shutdown...")
+	tucobot.CleanupCommands(dg, appID, "") // We can ignore the error during shutdown
+	
+	// Close Discord session
 	dg.Close()
 }

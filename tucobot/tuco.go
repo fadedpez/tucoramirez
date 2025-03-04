@@ -26,27 +26,36 @@ type sessionHandler interface {
 	InteractionRespond(i *discordgo.Interaction, r *discordgo.InteractionResponse, options ...discordgo.RequestOption) error
 	// Message sending
 	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	// Follow-up messages
+	FollowupMessageCreate(interaction *discordgo.Interaction, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
 }
 
-// Commands
-var commands = []*discordgo.ApplicationCommand{
+// Commands that are registered with Discord
+var Commands = []*discordgo.ApplicationCommand{
 	{
 		Name:        "dueltuco",
-		Description: "Duel Tuco",
-		// Ensure command is available in DMs and servers
-		DMPermission: new(bool),
+		Description: "Challenge Tuco to a duel",
 	},
 	{
 		Name:        "blackjack",
-		Description: "Start a game of blackjack with Tuco",
-		// Ensure command is available in DMs and servers
-		DMPermission: new(bool),
+		Description: "Start a game of blackjack",
 	},
+}
+
+// Helper function to create bool pointer
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+// Helper function to create int64 pointer
+func ptr(i int64) *int64 {
+	return &i
 }
 
 // RegisterCommands registers all slash commands with Discord
 func RegisterCommands(s sessionHandler, appID string, guildID string) error {
 	fmt.Printf("Starting command registration with appID: %s, guildID: %s\n", appID, guildID)
+	fmt.Printf("Attempting to register %d commands\n", len(Commands))
 
 	// First, clean up any existing commands
 	existingCommands, err := s.ApplicationCommands(appID, guildID)
@@ -55,60 +64,73 @@ func RegisterCommands(s sessionHandler, appID string, guildID string) error {
 	}
 
 	fmt.Printf("Found %d existing commands\n", len(existingCommands))
-	for _, cmd := range existingCommands {
-		fmt.Printf("Deleting command: %s (%s)\n", cmd.Name, cmd.ID)
-		if err := s.ApplicationCommandDelete(appID, guildID, cmd.ID); err != nil {
-			fmt.Printf("Warning: error deleting command %s: %v\n", cmd.Name, err)
-			// Continue even if deletion fails
+	for _, existingCmd := range existingCommands {
+		fmt.Printf("Found existing command: %s (%s)\n", existingCmd.Name, existingCmd.ID)
+		if err := s.ApplicationCommandDelete(appID, guildID, existingCmd.ID); err != nil {
+			fmt.Printf("Error deleting command %s: %v\n", existingCmd.Name, err)
+			return fmt.Errorf("error deleting command %s: %w", existingCmd.Name, err)
 		}
+		fmt.Printf("Successfully deleted command: %s\n", existingCmd.Name)
 	}
 
-	// Register new commands
-	fmt.Printf("Registering %d commands\n", len(commands))
+	// Start registering new commands
+	fmt.Println("Starting registration of commands")
 	registeredCommands := make(map[string]string)
-	for _, cmd := range commands {
-		fmt.Printf("Registering command: %s\n", cmd.Name)
+	var registrationErrors []string
+
+	for _, cmd := range Commands {
+		fmt.Printf("Attempting to register command: %s\n", cmd.Name)
 		registeredCmd, err := s.ApplicationCommandCreate(appID, guildID, cmd)
 		if err != nil {
-			return fmt.Errorf("error registering command %s: %v", cmd.Name, err)
+			errMsg := fmt.Sprintf("error registering command %s: %v", cmd.Name, err)
+			fmt.Printf("%s\n", errMsg)
+			registrationErrors = append(registrationErrors, errMsg)
+			continue
 		}
-		registeredCommands[registeredCmd.Name] = registeredCmd.ID
-		fmt.Printf("Successfully registered command %s with ID: %s\n", registeredCmd.Name, registeredCmd.ID)
+		registeredCommands[cmd.Name] = registeredCmd.ID
+		fmt.Printf("Successfully registered command %s with ID: %s\n", cmd.Name, registeredCmd.ID)
 	}
 
-	// Verify commands were registered
-	verifyCommands, err := s.ApplicationCommands(appID, guildID)
+	// Verify all commands were registered
+	fmt.Println("Verifying registered commands...")
+	verifiedCommands, err := s.ApplicationCommands(appID, guildID)
 	if err != nil {
-		return fmt.Errorf("error verifying commands: %v", err)
+		return fmt.Errorf("error verifying registered commands: %w", err)
 	}
 
-	fmt.Printf("Verifying %d commands\n", len(verifyCommands))
-	for _, cmd := range verifyCommands {
-		if id, exists := registeredCommands[cmd.Name]; exists {
-			if id != cmd.ID {
-				return fmt.Errorf("command %s has mismatched ID. Expected %s, got %s", cmd.Name, id, cmd.ID)
-			}
+	for _, cmd := range verifiedCommands {
+		fmt.Printf("Found registered command: %s (%s)\n", cmd.Name, cmd.ID)
+		if id, ok := registeredCommands[cmd.Name]; ok && id == cmd.ID {
 			fmt.Printf("Verified command %s (ID: %s)\n", cmd.Name, cmd.ID)
 		} else {
-			return fmt.Errorf("unexpected command found: %s (ID: %s)", cmd.Name, cmd.ID)
+			errMsg := fmt.Sprintf("command %s failed verification", cmd.Name)
+			registrationErrors = append(registrationErrors, errMsg)
 		}
 	}
 
-	if len(verifyCommands) != len(commands) {
-		return fmt.Errorf("command count mismatch. Expected %d, got %d", len(commands), len(verifyCommands))
+	// Report final status
+	successCount := len(registeredCommands)
+	if successCount == len(Commands) {
+		fmt.Printf("Successfully registered all %d commands\n", successCount)
+		return nil
 	}
 
-	return nil
+	if len(registrationErrors) > 0 {
+		fmt.Printf("Registered %d/%d commands with %d errors\n", successCount, len(Commands), len(registrationErrors))
+		return fmt.Errorf("some commands failed to register: %v", registrationErrors)
+	}
+
+	return fmt.Errorf("unknown error during command registration")
 }
 
 // CleanupCommands removes all registered commands
-func CleanupCommands(s sessionHandler, appID string, guildID string) {
+func CleanupCommands(s sessionHandler, appID string, guildID string) error {
 	fmt.Printf("Starting command cleanup with appID: %s, guildID: %s\n", appID, guildID)
 
 	existingCommands, err := s.ApplicationCommands(appID, guildID)
 	if err != nil {
 		fmt.Printf("Error fetching existing commands: %v\n", err)
-		return
+		return fmt.Errorf("error fetching existing commands: %w", err)
 	}
 
 	fmt.Printf("Found %d commands to clean up\n", len(existingCommands))
@@ -116,37 +138,29 @@ func CleanupCommands(s sessionHandler, appID string, guildID string) {
 		fmt.Printf("Deleting command: %s (%s)\n", cmd.Name, cmd.ID)
 		err := s.ApplicationCommandDelete(appID, guildID, cmd.ID)
 		if err != nil {
-			fmt.Printf("Error deleting command %s: %v\n", cmd.Name, err)
+			fmt.Printf("Warning: error deleting command %s: %v\n", cmd.Name, err)
+			// Continue with other commands even if one fails
+			continue
 		}
 	}
 
 	fmt.Println("Cleanup complete!")
+	return nil
 }
 
-// InteractionCreate handles all incoming Discord interactions
 func InteractionCreate(s sessionHandler, i *discordgo.InteractionCreate) {
-	fmt.Printf("Received interaction type: %v\n", i.Type)
-
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
-		fmt.Printf("Received command: %s\n", i.ApplicationCommandData().Name)
 		switch i.ApplicationCommandData().Name {
+		case "blackjack":
+			fmt.Printf("Starting blackjack game for user: %s\n", i.Member.User.Username)
+			games.StartBlackjackGame(s, i)
 		case "dueltuco":
 			handleDuelTuco(s, i)
-		case "blackjack":
-			handleBlackjack(s, i)
-		default:
-			fmt.Printf("Unknown command: %s\n", i.ApplicationCommandData().Name)
 		}
 	case discordgo.InteractionMessageComponent:
-		fmt.Printf("Received button click: %s\n", i.MessageComponentData().CustomID)
-		switch {
-		case strings.HasPrefix(i.MessageComponentData().CustomID, "blackjack_"):
+		if strings.HasPrefix(i.MessageComponentData().CustomID, "blackjack_") {
 			games.HandleBlackjackButton(s, i)
-		case i.MessageComponentData().CustomID == "duel_button":
-			handleDuelButton(s, i)
-		default:
-			fmt.Printf("Unknown button: %s\n", i.MessageComponentData().CustomID)
 		}
 	}
 }
@@ -170,11 +184,6 @@ func handleDuelTuco(s sessionHandler, i *discordgo.InteractionCreate) {
 	if err != nil {
 		fmt.Printf("Error responding to duel command: %v\n", err)
 	}
-}
-
-func handleBlackjack(s sessionHandler, i *discordgo.InteractionCreate) {
-	fmt.Printf("Starting blackjack game for user: %s\n", i.Member.User.Username)
-	games.StartBlackjackGame(s, i)
 }
 
 func handleDuelButton(s sessionHandler, i *discordgo.InteractionCreate) {

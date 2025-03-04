@@ -12,6 +12,7 @@ type MockSession struct {
 	commands            []*discordgo.ApplicationCommand
 	interactionResponse *discordgo.InteractionResponse
 	messageSent         *discordgo.MessageSend
+	followupMessage     *discordgo.WebhookParams
 }
 
 func (m *MockSession) ApplicationCommandCreate(appID, guildID string, cmd *discordgo.ApplicationCommand, options ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error) {
@@ -35,6 +36,11 @@ func (m *MockSession) ChannelMessageSendComplex(channelID string, data *discordg
 
 func (m *MockSession) ApplicationCommandDelete(appID, guildID, cmdID string, options ...discordgo.RequestOption) error {
 	return nil
+}
+
+func (m *MockSession) FollowupMessageCreate(interaction *discordgo.Interaction, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	m.followupMessage = data
+	return &discordgo.Message{}, nil
 }
 
 func TestRegisterCommands(t *testing.T) {
@@ -92,12 +98,12 @@ func TestInteractionCreate_ButtonClick(t *testing.T) {
 		Interaction: &discordgo.Interaction{
 			Type: discordgo.InteractionMessageComponent,
 			Data: discordgo.MessageComponentInteractionData{
-				CustomID: "duel_button",
+				CustomID: "duel_accept",
 			},
 			Member: &discordgo.Member{
 				User: &discordgo.User{
-					ID:       "123",
-					Username: "TestUser",
+					ID:       "test-user",
+					Username: "Test User",
 				},
 			},
 		},
@@ -109,15 +115,11 @@ func TestInteractionCreate_ButtonClick(t *testing.T) {
 		t.Fatal("Expected interaction response, got nil")
 	}
 
-	if mock.interactionResponse.Type != discordgo.InteractionResponseUpdateMessage {
-		t.Errorf("Expected response type %d (UpdateMessage), got %d", 
-			discordgo.InteractionResponseUpdateMessage, 
-			mock.interactionResponse.Type)
+	if mock.interactionResponse.Type != discordgo.InteractionResponseChannelMessageWithSource {
+		t.Errorf("Expected response type %d, got %d", discordgo.InteractionResponseChannelMessageWithSource, mock.interactionResponse.Type)
 	}
 
-	// Verify the response contains roll results
-	content := mock.interactionResponse.Data.Content
-	if !strings.Contains(content, "You rolled") || !strings.Contains(content, "Tuco rolled") {
-		t.Errorf("Expected roll results in response, got: %s", content)
+	if !strings.Contains(mock.interactionResponse.Data.Content, "Test User") {
+		t.Error("Expected response to contain username")
 	}
 }
