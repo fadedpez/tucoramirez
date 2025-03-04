@@ -36,9 +36,9 @@ var commands = []*discordgo.ApplicationCommand{
 }
 
 // RegisterCommands registers all slash commands with Discord
-func RegisterCommands(s sessionHandler) {
+func RegisterCommands(s sessionHandler, appID string, guildID string) {
 	for _, command := range commands {
-		_, err := s.ApplicationCommandCreate("", "", command)
+		_, err := s.ApplicationCommandCreate(appID, guildID, command)
 		if err != nil {
 			fmt.Printf("Cannot create command %s: %v\n", command.Name, err)
 		}
