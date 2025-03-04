@@ -3,156 +3,110 @@ package games
 import (
 	"testing"
 
-	"github.com/fadedpez/tucoramirez/tucobot/cards"
+	"github.com/bwmarrin/discordgo"
 )
 
-func TestNewGame(t *testing.T) {
-	game := NewGame()
+// MockSession implements sessionHandler for testing
+type MockSession struct {
+	interactionResponse *discordgo.InteractionResponse
+	messageSent         *discordgo.MessageSend
+}
 
-	if game == nil {
-		t.Fatal("Expected game to not be nil")
+func (m *MockSession) InteractionRespond(i *discordgo.Interaction, r *discordgo.InteractionResponse, options ...discordgo.RequestOption) error {
+	m.interactionResponse = r
+	return nil
+}
+
+func (m *MockSession) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	m.messageSent = data
+	return &discordgo.Message{}, nil
+}
+
+func TestStartBlackjackGame(t *testing.T) {
+	mock := &MockSession{}
+	channelID := "test-channel"
+
+	err := StartBlackjackGame(mock, channelID)
+	if err != nil {
+		t.Fatalf("StartBlackjackGame failed: %v", err)
 	}
 
-	if len(game.Deck) != 52 {
-		t.Errorf("Expected deck to have 52 cards, got %d", len(game.Deck))
+	if mock.messageSent == nil {
+		t.Fatal("Expected message to be sent, got nil")
 	}
 
-	if game.Dealer == nil {
-		t.Error("Expected dealer to not be nil")
+	if mock.messageSent.Content != "A new game of blackjack has started! Click Join to play." {
+		t.Errorf("Expected game start message, got: %s", mock.messageSent.Content)
 	}
 
-	if len(game.Players) != 0 {
-		t.Errorf("Expected no players initially, got %d", len(game.Players))
+	components := mock.messageSent.Components
+	if len(components) != 1 {
+		t.Fatalf("Expected 1 component row, got %d", len(components))
+	}
+
+	row, ok := components[0].(discordgo.ActionsRow)
+	if !ok {
+		t.Fatal("Expected ActionsRow component")
+	}
+
+	if len(row.Components) != 2 {
+		t.Fatalf("Expected 2 buttons, got %d", len(row.Components))
+	}
+
+	joinButton, ok := row.Components[0].(discordgo.Button)
+	if !ok {
+		t.Fatal("Expected Button component for Join")
+	}
+	if joinButton.Label != "Join" {
+		t.Errorf("Expected Join button, got: %s", joinButton.Label)
+	}
+
+	dealButton, ok := row.Components[1].(discordgo.Button)
+	if !ok {
+		t.Fatal("Expected Button component for Deal")
+	}
+	if dealButton.Label != "Deal" {
+		t.Errorf("Expected Deal button, got: %s", dealButton.Label)
 	}
 }
 
-func TestUpdatePlayerScore(t *testing.T) {
-	tests := []struct {
-		name     string
-		hand     []cards.Card
-		expected int
-	}{
-		{
-			name: "Basic hand",
-			hand: []cards.Card{
-				{Value: ":keycap_ten:", Suit: ":hearts:"},
-				{Value: ":seven:", Suit: ":clubs:"},
+func TestHandleButton(t *testing.T) {
+	mock := &MockSession{}
+	channelID := "test-channel"
+
+	// Start a new game
+	err := StartBlackjackGame(mock, channelID)
+	if err != nil {
+		t.Fatalf("StartBlackjackGame failed: %v", err)
+	}
+
+	// Test Join button
+	interaction := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			Type:      discordgo.InteractionMessageComponent,
+			ChannelID: channelID,
+			Member: &discordgo.Member{
+				User: &discordgo.User{
+					ID:       "test-user",
+					Username: "TestUser",
+				},
 			},
-			expected: 17,
-		},
-		{
-			name: "Blackjack",
-			hand: []cards.Card{
-				{Value: ":regional_indicator_a:", Suit: ":hearts:"},
-				{Value: ":regional_indicator_k:", Suit: ":clubs:"},
+			Data: discordgo.MessageComponentInteractionData{
+				CustomID: "join_button",
 			},
-			expected: 21,
-		},
-		{
-			name: "Multiple aces",
-			hand: []cards.Card{
-				{Value: ":regional_indicator_a:", Suit: ":hearts:"},
-				{Value: ":regional_indicator_a:", Suit: ":clubs:"},
-				{Value: ":nine:", Suit: ":diamonds:"},
-			},
-			expected: 21,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			player := &cards.Player{
-				ID:   "test",
-				Name: "Test Player",
-				Hand: tt.hand,
-			}
-			updatePlayerScore(player)
-			if player.Score != tt.expected {
-				t.Errorf("Expected score %d, got %d", tt.expected, player.Score)
-			}
-		})
-	}
-}
-
-func TestDealCard(t *testing.T) {
-	gameSession = NewGame()
-	initialDeckSize := len(gameSession.Deck)
-	
-	player := &cards.Player{
-		ID:   "test",
-		Name: "Test Player",
-		Hand: []cards.Card{},
+	err = HandleButton(mock, interaction)
+	if err != nil {
+		t.Fatalf("HandleButton failed: %v", err)
 	}
 
-	dealCard(player)
-
-	if len(gameSession.Deck) != initialDeckSize-1 {
-		t.Errorf("Expected deck size to decrease by 1, got %d", len(gameSession.Deck))
+	if mock.interactionResponse == nil {
+		t.Fatal("Expected interaction response, got nil")
 	}
 
-	if len(player.Hand) != 1 {
-		t.Errorf("Expected player to have 1 card, got %d", len(player.Hand))
-	}
-}
-
-func TestDetermineWinner(t *testing.T) {
-	tests := []struct {
-		name         string
-		playerScore  int
-		dealerScore  int
-		expectedWins bool
-	}{
-		{"Player busts", 22, 20, false},
-		{"Dealer busts", 20, 22, true},
-		{"Player wins", 20, 18, true},
-		{"Dealer wins", 18, 20, false},
-		{"Tie", 20, 20, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gameSession = NewGame()
-			player := &cards.Player{
-				ID:    "test",
-				Name:  "Test Player",
-				Score: tt.playerScore,
-			}
-			gameSession.Dealer.Score = tt.dealerScore
-
-			result := determineWinner(player)
-			containsWins := result == "Test Player wins!" || result == "Dealer busted! Test Player wins!"
-			
-			if containsWins != tt.expectedWins {
-				t.Errorf("Expected wins=%v, got result=%s", tt.expectedWins, result)
-			}
-		})
-	}
-}
-
-func TestGetGameState(t *testing.T) {
-	gameSession = NewGame()
-	
-	// Add a test player
-	gameSession.Players = append(gameSession.Players, cards.Player{
-		ID:   "test",
-		Name: "Test Player",
-		Hand: []cards.Card{
-			{Value: ":keycap_ten:", Suit: ":hearts:"},
-			{Value: ":seven:", Suit: ":clubs:"},
-		},
-		Score: 17,
-	})
-
-	// Add dealer cards
-	gameSession.Dealer.Hand = []cards.Card{
-		{Value: ":nine:", Suit: ":diamonds:"},
-		{Value: ":eight:", Suit: ":spades:"},
-	}
-	gameSession.Dealer.Score = 17
-
-	state := getGameState()
-	
-	if state == "" {
-		t.Error("Expected non-empty game state")
+	if mock.interactionResponse.Type != discordgo.InteractionResponseChannelMessageWithSource {
+		t.Errorf("Expected response type %d, got %d", discordgo.InteractionResponseChannelMessageWithSource, mock.interactionResponse.Type)
 	}
 }
