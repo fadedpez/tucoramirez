@@ -21,6 +21,8 @@ type sessionHandler interface {
 	InteractionRespond(i *discordgo.Interaction, r *discordgo.InteractionResponse, options ...discordgo.RequestOption) error
 	// Message sending
 	ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	// Command deletion
+	ApplicationCommandDelete(appID, guildID, cmdID string, options ...discordgo.RequestOption) error
 }
 
 // Commands
@@ -37,21 +39,48 @@ var commands = []*discordgo.ApplicationCommand{
 
 // RegisterCommands registers all slash commands with Discord
 func RegisterCommands(s sessionHandler, appID string, guildID string) {
+	fmt.Printf("Registering commands with appID: %s, guildID: %s\n", appID, guildID)
 	for _, command := range commands {
-		_, err := s.ApplicationCommandCreate(appID, guildID, command)
+		fmt.Printf("Registering command: %s\n", command.Name)
+		cmd, err := s.ApplicationCommandCreate(appID, guildID, command)
 		if err != nil {
 			fmt.Printf("Cannot create command %s: %v\n", command.Name, err)
+		} else {
+			fmt.Printf("Successfully registered command %s with ID: %s\n", cmd.Name, cmd.ID)
 		}
 	}
 }
 
+// CleanupCommands removes all registered commands
+func CleanupCommands(s *discordgo.Session, appID string, guildID string) {
+	fmt.Println("Cleaning up commands...")
+	registeredCommands, err := s.ApplicationCommands(appID, guildID)
+	if err != nil {
+		fmt.Printf("Could not fetch registered commands: %v\n", err)
+		return
+	}
+
+	for _, cmd := range registeredCommands {
+		err := s.ApplicationCommandDelete(appID, guildID, cmd.ID)
+		if err != nil {
+			fmt.Printf("Cannot delete command %s: %v\n", cmd.Name, err)
+		} else {
+			fmt.Printf("Successfully deleted command %s\n", cmd.Name)
+		}
+	}
+	fmt.Println("Cleanup complete!")
+}
+
 // InteractionCreate handles all incoming Discord interactions
 func InteractionCreate(s sessionHandler, i *discordgo.InteractionCreate) {
+	fmt.Printf("Received interaction type: %v\n", i.Type)
 	var err error
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
+		fmt.Printf("Received command: %s\n", i.ApplicationCommandData().Name)
 		err = handleCommand(s, i)
 	case discordgo.InteractionMessageComponent:
+		fmt.Printf("Received button click: %s\n", i.MessageComponentData().CustomID)
 		err = handleButtonClick(s, i)
 	}
 	if err != nil {

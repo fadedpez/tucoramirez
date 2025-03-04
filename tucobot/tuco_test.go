@@ -28,6 +28,10 @@ func (m *MockSession) ChannelMessageSendComplex(channelID string, data *discordg
 	return &discordgo.Message{}, nil
 }
 
+func (m *MockSession) ApplicationCommandDelete(appID, guildID, cmdID string, options ...discordgo.RequestOption) error {
+	return nil
+}
+
 func TestRegisterCommands(t *testing.T) {
 	mock := &MockSession{}
 	RegisterCommands(mock, "test-app-id", "test-guild-id")
