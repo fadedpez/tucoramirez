@@ -21,6 +21,7 @@ func main() {
 	token := os.Getenv("DISCORD_TOKEN")
 	if token == "" {
 		fmt.Println("No token provided. Please set the DISCORD_TOKEN environment variable in your .env file.")
+
 		return
 	}
 
