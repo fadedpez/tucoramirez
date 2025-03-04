@@ -21,6 +21,7 @@ func main() {
 	token := os.Getenv("DISCORD_TOKEN")
 	if token == "" {
 		fmt.Println("No token provided. Please set the DISCORD_TOKEN environment variable in your .env file.")
+
 		return
 	}
 
@@ -41,8 +42,13 @@ func main() {
 
 	// Add handlers
 	dg.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+		fmt.Printf("Received interaction from Discord\n")
 		tucobot.InteractionCreate(s, i)
 	})
+	dg.AddHandler(tucobot.MessageCreate)
+
+	// Identify with Discord Gateway with required intents
+	dg.Identify.Intents = discordgo.IntentsGuildMessages | discordgo.IntentsDirectMessages
 
 	// Open websocket connection
 	err = dg.Open()
@@ -52,7 +58,9 @@ func main() {
 	}
 
 	// Register commands
+	fmt.Println("Registering commands...")
 	tucobot.RegisterCommands(dg, appID, guildID)
+	fmt.Println("Commands registered!")
 
 	fmt.Println("Tuco is now running. Press CTRL-C to exit.")
 	sc := make(chan os.Signal, 1)
@@ -60,5 +68,7 @@ func main() {
 	<-sc
 
 	// Clean up
+	fmt.Println("Cleaning up before exit...")
+	tucobot.CleanupCommands(dg, appID, guildID)
 	dg.Close()
 }
