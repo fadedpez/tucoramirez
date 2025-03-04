@@ -7,7 +7,7 @@ import (
 func HandleJoinGame(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	if _, ok := activeGames[i.ChannelID]; !ok {
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Type: discordgo.InteractionResponseUpdateMessage,
 			Data: &discordgo.InteractionResponseData{
 				Content: "No active game session",
 			},

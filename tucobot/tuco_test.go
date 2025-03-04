@@ -2,6 +2,7 @@ package tucobot
 
 import (
 	"testing"
+	"strings"
 
 	"github.com/bwmarrin/discordgo"
 )
@@ -108,7 +109,15 @@ func TestInteractionCreate_ButtonClick(t *testing.T) {
 		t.Fatal("Expected interaction response, got nil")
 	}
 
-	if mock.interactionResponse.Type != discordgo.InteractionResponseChannelMessageWithSource {
-		t.Errorf("Expected response type %d, got %d", discordgo.InteractionResponseChannelMessageWithSource, mock.interactionResponse.Type)
+	if mock.interactionResponse.Type != discordgo.InteractionResponseUpdateMessage {
+		t.Errorf("Expected response type %d (UpdateMessage), got %d", 
+			discordgo.InteractionResponseUpdateMessage, 
+			mock.interactionResponse.Type)
+	}
+
+	// Verify the response contains roll results
+	content := mock.interactionResponse.Data.Content
+	if !strings.Contains(content, "You rolled") || !strings.Contains(content, "Tuco rolled") {
+		t.Errorf("Expected roll results in response, got: %s", content)
 	}
 }
