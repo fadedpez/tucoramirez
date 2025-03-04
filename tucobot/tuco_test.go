@@ -30,7 +30,7 @@ func (m *MockSession) ChannelMessageSendComplex(channelID string, data *discordg
 
 func TestRegisterCommands(t *testing.T) {
 	mock := &MockSession{}
-	RegisterCommands(mock)
+	RegisterCommands(mock, "test-app-id", "test-guild-id")
 
 	if len(mock.commands) != 2 {
 		t.Errorf("Expected 2 commands to be registered, got %d", len(mock.commands))

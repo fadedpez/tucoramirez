@@ -8,14 +8,29 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/fadedpez/tucoramirez/tucobot"
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	token := os.Getenv("DISCORD_TOKEN")
-	if token == "" {
-		fmt.Println("No token provided. Please set the DISCORD_TOKEN environment variable.")
+	// Load .env file
+	if err := godotenv.Load(); err != nil {
+		fmt.Println("Error loading .env file. Make sure it exists and is properly formatted.")
 		return
 	}
+
+	token := os.Getenv("DISCORD_TOKEN")
+	if token == "" {
+		fmt.Println("No token provided. Please set the DISCORD_TOKEN environment variable in your .env file.")
+		return
+	}
+
+	appID := os.Getenv("DISCORD_APP_ID")
+	if appID == "" {
+		fmt.Println("No application ID provided. Please set the DISCORD_APP_ID environment variable in your .env file.")
+		return
+	}
+
+	guildID := os.Getenv("DISCORD_GUILD_ID") // Optional, leave empty to register commands globally
 
 	// Create a new Discord session
 	dg, err := discordgo.New("Bot " + token)
@@ -37,7 +52,7 @@ func main() {
 	}
 
 	// Register commands
-	tucobot.RegisterCommands(dg)
+	tucobot.RegisterCommands(dg, appID, guildID)
 
 	fmt.Println("Tuco is now running. Press CTRL-C to exit.")
 	sc := make(chan os.Signal, 1)
