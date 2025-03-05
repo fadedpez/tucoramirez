@@ -165,20 +165,27 @@ func HandleBlackjackButton(s sessionHandler, i *discordgo.InteractionCreate) {
 // handleJoin handles a player joining the game
 func handleJoin(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
 	if game.GameState != Waiting {
-		handleError(s, i, "Game has already started!", nil)
+		handleError(s, i, "Game is not accepting new players!", nil)
 		return
 	}
 
 	// Check if player is already in the game
-	playerID := i.Member.User.ID
 	for _, p := range game.Players {
-		if p.ID == playerID {
-			handleError(s, i, "You are already in the game!", nil)
+		if p.ID == i.Member.User.ID {
+			err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "You are already in this game!",
+					Flags:   discordgo.MessageFlagsEphemeral,
+				},
+			})
+			if err != nil {
+				fmt.Printf("Error sending already joined message: %v\n", err)
+			}
 			return
 		}
 	}
 
-	// Check if game is full
 	if len(game.Players) >= maxPlayers {
 		handleError(s, i, "Game is full!", nil)
 		return
@@ -186,45 +193,55 @@ func handleJoin(s sessionHandler, i *discordgo.InteractionCreate, game *Blackjac
 
 	// Add the new player
 	newPlayer := &Player{
-		ID:       playerID,
+		ID:       i.Member.User.ID,
 		Username: i.Member.User.Username,
+		Hand:     []cards.Card{},
 	}
 	game.Players = append(game.Players, newPlayer)
 
-	// Update the message with current players
+	// Build the player list
 	var playerList strings.Builder
-	for _, p := range game.Players {
-		playerList.WriteString("- " + p.Username + "\n")
+	for i, player := range game.Players {
+		if i == len(game.Players)-1 && len(game.Players) > 1 {
+			playerList.WriteString(", and ")
+		}
+		playerList.WriteString(player.Username)
+		if i < len(game.Players)-2 {
+			playerList.WriteString(", ")
+		}
+	}
+
+	// Update the game message
+	content := fmt.Sprintf("🎲 Blackjack Game (%d/%d players)\nPlayers: %s", len(game.Players), maxPlayers, playerList.String())
+	buttons := []discordgo.MessageComponent{
+		discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{
+				discordgo.Button{
+					Label:    "Join Game",
+					Style:    discordgo.SuccessButton, // Success (green)
+					CustomID: "blackjack_join",
+					Disabled: len(game.Players) >= maxPlayers,
+				},
+				discordgo.Button{
+					Label:    "Start Game",
+					Style:    discordgo.PrimaryButton, // Primary (blue)
+					CustomID: "blackjack_start",
+					Disabled: len(game.Players) < 1,
+				},
+			},
+		},
 	}
 
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
 		Data: &discordgo.InteractionResponseData{
-			Content: fmt.Sprintf("🎲 Blackjack Game Created! 🎲\nPlayers (%d/%d):\n%s\nClick Join to join the game, or Start to begin with current players.",
-				len(game.Players), maxPlayers, playerList.String()),
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{
-						discordgo.Button{
-							Label:    "Join Game",
-							Style:    discordgo.SuccessButton, // Success (green)
-							CustomID: "blackjack_join",
-							Disabled: len(game.Players) >= maxPlayers,
-						},
-						discordgo.Button{
-							Label:    "Start Game",
-							Style:    discordgo.PrimaryButton, // Primary (blue)
-							CustomID: "blackjack_start",
-							Disabled: len(game.Players) < 1,
-						},
-					},
-				},
-			},
+			Content:    content,
+			Components: buttons,
 		},
 	})
-
 	if err != nil {
 		fmt.Printf("Error updating game message: %v\n", err)
+		return
 	}
 }
 
@@ -233,6 +250,30 @@ func startGame(s sessionHandler, i *discordgo.InteractionCreate, game *Blackjack
 	if game.GameState != Waiting {
 		handleError(s, i, "Game has already started!", nil)
 		return
+	}
+
+	// If this is a manual start (not auto-start), check if the player is in the game
+	if i != nil {
+		playerInGame := false
+		for _, p := range game.Players {
+			if p.ID == i.Member.User.ID {
+				playerInGame = true
+				break
+			}
+		}
+		if !playerInGame {
+			err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseChannelMessageWithSource,
+				Data: &discordgo.InteractionResponseData{
+					Content: "You must join the game before you can start it!",
+					Flags:   discordgo.MessageFlagsEphemeral,
+				},
+			})
+			if err != nil {
+				fmt.Printf("Error sending not in game message: %v\n", err)
+			}
+			return
+		}
 	}
 
 	if len(game.Players) < 1 {
@@ -429,11 +470,11 @@ func calculateScore(hand []cards.Card) int {
 
 // handleError handles error responses
 func handleError(s sessionHandler, i *discordgo.InteractionCreate, msg string, err error) {
-	errMsg := msg
 	if err != nil {
-		errMsg = fmt.Sprintf("%s: %v", msg, err)
+		fmt.Printf("Error: %v\n", err)
 	}
-
+	
+	errMsg := fmt.Sprintf("❌ %s", msg)
 	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
