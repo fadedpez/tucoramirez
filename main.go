@@ -102,7 +102,7 @@ func main() {
 		if i.Type == discordgo.InteractionApplicationCommand {
 			fmt.Printf("Command name: %s\n", i.ApplicationCommandData().Name)
 		}
-		tucobot.InteractionCreate(s, i)
+		tucobot.InteractionCreate(tucobot.NewSessionWrapper(s), i)
 	})
 
 	dg.AddHandler(func(s *discordgo.Session, g *discordgo.GuildCreate) {
@@ -117,7 +117,7 @@ func main() {
 		}
 
 		// Register commands for this guild
-		if err := tucobot.RegisterCommands(s, appID, g.ID); err != nil {
+		if err := tucobot.RegisterCommands(tucobot.NewSessionWrapper(s), appID, g.ID); err != nil {
 			fmt.Printf("Error registering commands for guild %s: %v\n", g.Name, err)
 		}
 	})
@@ -143,32 +143,32 @@ func main() {
 	
 	// First, try to clean up any global commands
 	fmt.Println("Cleaning up any existing global commands...")
-	if err := tucobot.CleanupCommands(dg, appID, ""); err != nil {
+	if err := tucobot.CleanupCommands(tucobot.NewSessionWrapper(dg), appID, ""); err != nil {
 		fmt.Printf("Warning: error cleaning up global commands: %v\n", err)
 	}
 
 	// Then register for each guild
 	var registrationErrors []string
-	for _, g := range guilds {
-		fmt.Printf("\nProcessing guild: %s (ID: %s)\n", g.Name, g.ID)
+	for _, guild := range guilds {
+		fmt.Printf("\nProcessing guild: %s (ID: %s)\n", guild.Name, guild.ID)
 		
 		// First cleanup any existing commands in this guild
-		fmt.Printf("Cleaning up commands for guild %s...\n", g.Name)
-		if err := tucobot.CleanupCommands(dg, appID, g.ID); err != nil {
-			fmt.Printf("Warning: error cleaning up commands for guild %s: %v\n", g.Name, err)
+		fmt.Printf("Cleaning up commands for guild %s...\n", guild.Name)
+		if err := tucobot.CleanupCommands(tucobot.NewSessionWrapper(dg), appID, guild.ID); err != nil {
+			fmt.Printf("Warning: error cleaning up commands for guild %s: %v\n", guild.Name, err)
 			// Continue anyway as the registration might still work
 		}
 
 		// Then register new commands
-		fmt.Printf("Registering commands for guild %s...\n", g.Name)
-		if err := tucobot.RegisterCommands(dg, appID, g.ID); err != nil {
-			errMsg := fmt.Sprintf("Error registering commands for guild %s: %v", g.Name, err)
+		fmt.Printf("Registering commands for guild %s...\n", guild.Name)
+		if err := tucobot.RegisterCommands(tucobot.NewSessionWrapper(dg), appID, guild.ID); err != nil {
+			errMsg := fmt.Sprintf("Error registering commands for guild %s: %v", guild.Name, err)
 			fmt.Printf("%s\n", errMsg)
 			registrationErrors = append(registrationErrors, errMsg)
 			// Continue with other guilds even if one fails
 			continue
 		}
-		fmt.Printf("Successfully registered commands for guild: %s\n", g.Name)
+		fmt.Printf("Successfully registered commands for guild: %s\n", guild.Name)
 	}
 
 	if len(registrationErrors) > 0 {
@@ -188,7 +188,7 @@ func main() {
 
 	// Cleanup before exit
 	fmt.Println("Cleaning up commands before shutdown...")
-	tucobot.CleanupCommands(dg, appID, "") // We can ignore the error during shutdown
+	tucobot.CleanupCommands(tucobot.NewSessionWrapper(dg), appID, "") // We can ignore the error during shutdown
 	
 	// Close Discord session
 	dg.Close()
