@@ -64,7 +64,7 @@ func StartBlackjackGame(s sessionHandler, i *discordgo.InteractionCreate) {
 			// Clean up finished game
 			delete(activeGames, channelID)
 		} else {
-			handleError(s, i, "A game is already in progress in this channel!", nil)
+			sendEphemeralError(s, i, "A game is already in progress in this channel!")
 			return
 		}
 	}
@@ -72,7 +72,7 @@ func StartBlackjackGame(s sessionHandler, i *discordgo.InteractionCreate) {
 	// Create and shuffle new deck
 	deck, err := cards.NewDeck()
 	if err != nil {
-		handleError(s, i, "Failed to create deck", err)
+		sendEphemeralError(s, i, "Failed to create deck")
 		return
 	}
 	deck.Shuffle()
@@ -144,7 +144,7 @@ func HandleBlackjackButton(s sessionHandler, i *discordgo.InteractionCreate) {
 	// Get the game for this channel
 	game, exists := activeGames[i.ChannelID]
 	if !exists {
-		handleError(s, i, "No game in progress in this channel!", nil)
+		sendEphemeralError(s, i, "No game in progress in this channel!")
 		return
 	}
 
@@ -158,36 +158,41 @@ func HandleBlackjackButton(s sessionHandler, i *discordgo.InteractionCreate) {
 	case "blackjack_stand":
 		handleStand(s, i, game)
 	default:
-		handleError(s, i, "Unknown button interaction", nil)
+		sendEphemeralError(s, i, "Unknown button interaction")
+	}
+}
+
+// sendEphemeralError sends an ephemeral error message to the user
+func sendEphemeralError(s sessionHandler, i *discordgo.InteractionCreate, msg string) {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content: fmt.Sprintf("❌ %s", msg),
+			Flags:   discordgo.MessageFlagsEphemeral,
+		},
+	})
+	if err != nil {
+		fmt.Printf("Error sending error message: %v\n", err)
 	}
 }
 
 // handleJoin handles a player joining the game
 func handleJoin(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
 	if game.GameState != Waiting {
-		handleError(s, i, "Game is not accepting new players!", nil)
+		sendEphemeralError(s, i, "Game is not accepting new players!")
 		return
 	}
 
 	// Check if player is already in the game
 	for _, p := range game.Players {
 		if p.ID == i.Member.User.ID {
-			err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{
-					Content: "You are already in this game!",
-					Flags:   discordgo.MessageFlagsEphemeral,
-				},
-			})
-			if err != nil {
-				fmt.Printf("Error sending already joined message: %v\n", err)
-			}
+			sendEphemeralError(s, i, "You are already in this game!")
 			return
 		}
 	}
 
 	if len(game.Players) >= maxPlayers {
-		handleError(s, i, "Game is full!", nil)
+		sendEphemeralError(s, i, "Game is full!")
 		return
 	}
 
@@ -241,14 +246,13 @@ func handleJoin(s sessionHandler, i *discordgo.InteractionCreate, game *Blackjac
 	})
 	if err != nil {
 		fmt.Printf("Error updating game message: %v\n", err)
-		return
 	}
 }
 
 // startGame starts the actual game after initialization
 func startGame(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
 	if game.GameState != Waiting {
-		handleError(s, i, "Game has already started!", nil)
+		sendEphemeralError(s, i, "Game has already started!")
 		return
 	}
 
@@ -262,28 +266,19 @@ func startGame(s sessionHandler, i *discordgo.InteractionCreate, game *Blackjack
 			}
 		}
 		if !playerInGame {
-			err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{
-					Content: "You must join the game before you can start it!",
-					Flags:   discordgo.MessageFlagsEphemeral,
-				},
-			})
-			if err != nil {
-				fmt.Printf("Error sending not in game message: %v\n", err)
-			}
+			sendEphemeralError(s, i, "You must join the game before you can start it!")
 			return
 		}
 	}
 
 	if len(game.Players) < 1 {
-		handleError(s, i, "Not enough players to start!", nil)
+		sendEphemeralError(s, i, "Not enough players to start!")
 		return
 	}
 
 	// Only creator can start the game
 	if i.Member.User.ID != game.CreatorID {
-		handleError(s, i, "Only the game creator can start the game!", nil)
+		sendEphemeralError(s, i, "Only the game creator can start the game!")
 		return
 	}
 
@@ -294,12 +289,12 @@ func startGame(s sessionHandler, i *discordgo.InteractionCreate, game *Blackjack
 		// Draw two cards for the player
 		card1, err := game.Deck.Draw()
 		if err != nil {
-			handleError(s, i, "Failed to draw card", err)
+			sendEphemeralError(s, i, "Failed to draw card")
 			return
 		}
 		card2, err := game.Deck.Draw()
 		if err != nil {
-			handleError(s, i, "Failed to draw card", err)
+			sendEphemeralError(s, i, "Failed to draw card")
 			return
 		}
 		player.Hand = []cards.Card{card1, card2}
@@ -309,7 +304,7 @@ func startGame(s sessionHandler, i *discordgo.InteractionCreate, game *Blackjack
 	// Draw dealer's card
 	dealerCard, err := game.Deck.Draw()
 	if err != nil {
-		handleError(s, i, "Failed to draw dealer card", err)
+		sendEphemeralError(s, i, "Failed to draw dealer card")
 		return
 	}
 	game.DealerHand = []cards.Card{dealerCard}
@@ -468,29 +463,10 @@ func calculateScore(hand []cards.Card) int {
 	return score
 }
 
-// handleError handles error responses
-func handleError(s sessionHandler, i *discordgo.InteractionCreate, msg string, err error) {
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-	}
-	
-	errMsg := fmt.Sprintf("❌ %s", msg)
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: errMsg,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		},
-	})
-	if err != nil {
-		fmt.Printf("Error sending error message: %v\n", err)
-	}
-}
-
 // handleHit handles the hit action
 func handleHit(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
 	if game.GameState != Playing {
-		handleError(s, i, "Game is not in progress!", nil)
+		sendEphemeralError(s, i, "Game is not in progress!")
 		return
 	}
 
@@ -504,19 +480,19 @@ func handleHit(s sessionHandler, i *discordgo.InteractionCreate, game *Blackjack
 	}
 
 	if currentPlayer == nil {
-		handleError(s, i, "You are not in this game!", nil)
+		sendEphemeralError(s, i, "You are not in this game!")
 		return
 	}
 
 	if currentPlayer.Stood || currentPlayer.Busted {
-		handleError(s, i, "You cannot hit - you have already stood or busted!", nil)
+		sendEphemeralError(s, i, "You cannot hit - you have already stood or busted!")
 		return
 	}
 
 	// Draw a card
 	card, err := game.Deck.Draw()
 	if err != nil {
-		handleError(s, i, "Failed to draw card", err)
+		sendEphemeralError(s, i, "Failed to draw card")
 		return
 	}
 
@@ -595,7 +571,7 @@ func handleHit(s sessionHandler, i *discordgo.InteractionCreate, game *Blackjack
 // handleStand handles the stand action
 func handleStand(s sessionHandler, i *discordgo.InteractionCreate, game *BlackjackGame) {
 	if game.GameState != Playing {
-		handleError(s, i, "Game is not in progress!", nil)
+		sendEphemeralError(s, i, "Game is not in progress!")
 		return
 	}
 
@@ -609,12 +585,12 @@ func handleStand(s sessionHandler, i *discordgo.InteractionCreate, game *Blackja
 	}
 
 	if currentPlayer == nil {
-		handleError(s, i, "You are not in this game!", nil)
+		sendEphemeralError(s, i, "You are not in this game!")
 		return
 	}
 
 	if currentPlayer.Stood || currentPlayer.Busted {
-		handleError(s, i, "You have already stood or busted!", nil)
+		sendEphemeralError(s, i, "You have already stood or busted!")
 		return
 	}
 
