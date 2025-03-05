@@ -30,7 +30,22 @@ type sessionHandler interface {
 	FollowupMessageCreate(interaction *discordgo.Interaction, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error)
 	// Edit interaction response
 	InteractionResponseEdit(i *discordgo.Interaction, edit *discordgo.WebhookEdit, options ...discordgo.RequestOption) (*discordgo.Message, error)
+	// Edit channel message
+	ChannelMessageEdit(channelID string, messageID string, content string, options ...discordgo.RequestOption) (*discordgo.Message, error)
 }
+
+// SessionWrapper wraps a discordgo.Session to implement our sessionHandler interface
+type SessionWrapper struct {
+	*discordgo.Session
+}
+
+// NewSessionWrapper creates a new SessionWrapper from a discordgo.Session
+func NewSessionWrapper(s *discordgo.Session) *SessionWrapper {
+	return &SessionWrapper{s}
+}
+
+// Make sure SessionWrapper implements sessionHandler
+var _ sessionHandler = (*SessionWrapper)(nil)
 
 // Commands that are registered with Discord
 var Commands = []*discordgo.ApplicationCommand{

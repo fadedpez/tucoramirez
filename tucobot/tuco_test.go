@@ -14,6 +14,7 @@ type MockSession struct {
 	messageSent         *discordgo.MessageSend
 	followupMessage     *discordgo.WebhookParams
 	editedMessage       *discordgo.WebhookEdit
+	editedChannelMessage string
 }
 
 func (m *MockSession) ApplicationCommandCreate(appID, guildID string, cmd *discordgo.ApplicationCommand, options ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error) {
@@ -32,7 +33,7 @@ func (m *MockSession) InteractionRespond(i *discordgo.Interaction, r *discordgo.
 
 func (m *MockSession) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error) {
 	m.messageSent = data
-	return &discordgo.Message{}, nil
+	return &discordgo.Message{ID: "test_message_id"}, nil
 }
 
 func (m *MockSession) ApplicationCommandDelete(appID, guildID, cmdID string, options ...discordgo.RequestOption) error {
@@ -46,6 +47,11 @@ func (m *MockSession) FollowupMessageCreate(interaction *discordgo.Interaction, 
 
 func (m *MockSession) InteractionResponseEdit(i *discordgo.Interaction, edit *discordgo.WebhookEdit, options ...discordgo.RequestOption) (*discordgo.Message, error) {
 	m.editedMessage = edit
+	return &discordgo.Message{}, nil
+}
+
+func (m *MockSession) ChannelMessageEdit(channelID string, messageID string, content string, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	m.editedChannelMessage = content
 	return &discordgo.Message{}, nil
 }
 
