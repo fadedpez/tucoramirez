@@ -97,30 +97,34 @@ func StartBlackjackGame(s BlackjackSession, i *discordgo.InteractionCreate) {
 			Components: []discordgo.MessageComponent{
 				discordgo.Button{
 					Label:    "Join Game",
-					Style:    discordgo.SuccessButton, // Success (green)
+					Style:    discordgo.SuccessButton,
 					CustomID: "blackjack_join",
 				},
 				discordgo.Button{
 					Label:    "Start Game",
-					Style:    discordgo.PrimaryButton, // Primary (blue)
+					Style:    discordgo.PrimaryButton,
 					CustomID: "blackjack_start",
 				},
 			},
 		},
 	}
 
-	// Send initial message
-	msg, err := s.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-		Content:    fmt.Sprintf("🎲 Blackjack Game (1/%d players)\nPlayers: %s", maxPlayers, creator.Username),
-		Components: buttons,
+	// Send initial message as direct interaction response
+	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content:    fmt.Sprintf("🎲 Blackjack Game (1/%d players)\nPlayers: %s", maxPlayers, creator.Username),
+			Components: buttons,
+		},
 	})
 	if err != nil {
 		fmt.Printf("Error sending game start message: %v\n", err)
 		return
 	}
 
-	// Store the message ID
-	game.MessageID = msg.ID
+	// Get the message ID from the interaction response
+	// Note: The message ID will be the same as the interaction ID
+	game.MessageID = i.ID
 }
 
 // HandleBlackjackButton handles button presses for blackjack games
@@ -207,13 +211,13 @@ func handleJoin(s BlackjackSession, i *discordgo.InteractionCreate, game *Blackj
 			Components: []discordgo.MessageComponent{
 				discordgo.Button{
 					Label:    "Join Game",
-					Style:    discordgo.SuccessButton, // Success (green)
+					Style:    discordgo.SuccessButton,
 					CustomID: "blackjack_join",
 					Disabled: len(game.Players) >= maxPlayers,
 				},
 				discordgo.Button{
 					Label:    "Start Game",
-					Style:    discordgo.PrimaryButton, // Primary (blue)
+					Style:    discordgo.PrimaryButton,
 					CustomID: "blackjack_start",
 					Disabled: len(game.Players) < 1,
 				},
