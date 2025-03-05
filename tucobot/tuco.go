@@ -275,7 +275,7 @@ func MessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 	}
 
-	if regexp.MustCompile(`tuco\?$`).MatchString(m.Content) {
+	if regexp.MustCompile(`(?i)tuco\?$`).MatchString(m.Content) {
 		image, err := randFromTxt("images.txt")
 		if err != nil {
 			fmt.Println("Error getting random image:", err)

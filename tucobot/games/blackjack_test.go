@@ -2,7 +2,6 @@ package games
 
 import (
 	"testing"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/fadedpez/tucoramirez/tucobot/cards"
@@ -10,10 +9,10 @@ import (
 
 // MockSession implements necessary discordgo.Session methods for testing
 type MockSession struct {
-	interactionResponse *discordgo.InteractionResponse
-	followupMessage    *discordgo.WebhookParams
-	channelMessage     *discordgo.MessageSend
-	editedMessage      *discordgo.WebhookEdit
+	interactionResponse  *discordgo.InteractionResponse
+	followupMessage      *discordgo.WebhookParams
+	channelMessage       *discordgo.MessageSend
+	editedMessage        *discordgo.WebhookEdit
 	editedChannelMessage string
 }
 
@@ -123,7 +122,6 @@ func TestStartGame(t *testing.T) {
 		GameState: Waiting,
 		CreatorID: "user1",
 		ChannelID: channelID,
-		CreatedAt: time.Now(),
 	}
 	activeGames[channelID] = game
 
@@ -158,13 +156,12 @@ func TestGamePlay(t *testing.T) {
 		GameState: Playing,
 		CreatorID: "user1",
 		ChannelID: channelID,
-		CreatedAt: time.Now(),
 	}
-	
+
 	// Deal initial cards
 	game.PlayerHand = []cards.Card{{Rank: "10", Suit: "♠"}, {Rank: "7", Suit: "♥"}}
 	game.DealerHand = []cards.Card{{Rank: "8", Suit: "♣"}}
-	
+
 	activeGames[channelID] = game
 
 	// Test hit
