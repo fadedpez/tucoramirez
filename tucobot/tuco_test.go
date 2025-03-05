@@ -13,6 +13,7 @@ type MockSession struct {
 	interactionResponse *discordgo.InteractionResponse
 	messageSent         *discordgo.MessageSend
 	followupMessage     *discordgo.WebhookParams
+	editedMessage       *discordgo.WebhookEdit
 }
 
 func (m *MockSession) ApplicationCommandCreate(appID, guildID string, cmd *discordgo.ApplicationCommand, options ...discordgo.RequestOption) (*discordgo.ApplicationCommand, error) {
@@ -40,6 +41,11 @@ func (m *MockSession) ApplicationCommandDelete(appID, guildID, cmdID string, opt
 
 func (m *MockSession) FollowupMessageCreate(interaction *discordgo.Interaction, wait bool, data *discordgo.WebhookParams, options ...discordgo.RequestOption) (*discordgo.Message, error) {
 	m.followupMessage = data
+	return &discordgo.Message{}, nil
+}
+
+func (m *MockSession) InteractionResponseEdit(i *discordgo.Interaction, edit *discordgo.WebhookEdit, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	m.editedMessage = edit
 	return &discordgo.Message{}, nil
 }
 

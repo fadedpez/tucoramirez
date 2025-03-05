@@ -13,6 +13,7 @@ type MockSession struct {
 	interactionResponse *discordgo.InteractionResponse
 	followupMessage    *discordgo.WebhookParams
 	channelMessage     *discordgo.MessageSend
+	editedMessage      *discordgo.WebhookEdit
 }
 
 // Required Session interface methods
@@ -28,6 +29,11 @@ func (m *MockSession) FollowupMessageCreate(i *discordgo.Interaction, wait bool,
 
 func (m *MockSession) ChannelMessageSendComplex(channelID string, data *discordgo.MessageSend, options ...discordgo.RequestOption) (*discordgo.Message, error) {
 	m.channelMessage = data
+	return &discordgo.Message{}, nil
+}
+
+func (m *MockSession) InteractionResponseEdit(i *discordgo.Interaction, edit *discordgo.WebhookEdit, options ...discordgo.RequestOption) (*discordgo.Message, error) {
+	m.editedMessage = edit
 	return &discordgo.Message{}, nil
 }
 
