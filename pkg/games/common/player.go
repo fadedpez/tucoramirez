@@ -12,6 +12,14 @@ type Player struct {
 	Busted   bool
 }
 
+// NewPlayer creates a new player with the given ID
+func NewPlayer(id string) *Player {
+	return &Player{
+		ID:   id,
+		Hand: make([]cards.Card, 0),
+	}
+}
+
 // ClearHand removes all cards from the player's hand
 func (p *Player) ClearHand() {
 	p.Hand = []cards.Card{}

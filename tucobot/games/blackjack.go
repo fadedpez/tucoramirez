@@ -91,30 +91,27 @@ func StartBlackjackGame(s BlackjackSession, i *discordgo.InteractionCreate) {
 	// Store game in active games
 	activeGames[channelID] = game
 
-	// Create buttons for joining and starting
-	buttons := []discordgo.MessageComponent{
-		discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				discordgo.Button{
-					Label:    "Join Game",
-					Style:    discordgo.SuccessButton,
-					CustomID: "blackjack_join",
-				},
-				discordgo.Button{
-					Label:    "Start Game",
-					Style:    discordgo.PrimaryButton,
-					CustomID: "blackjack_start",
-				},
-			},
-		},
-	}
-
-	// Send initial message as direct interaction response
+	// Create initial game message
 	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content:    fmt.Sprintf("🎲 Blackjack Game (1/%d players)\nPlayers: %s", maxPlayers, creator.Username),
-			Components: buttons,
+			Content: fmt.Sprintf("🎲 **New Blackjack Game**\nGame Owner: **%s** 👑\nPlayers: %s", i.Member.User.Username, formatPlayerList(game.Players)),
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Join",
+							Style:    discordgo.SuccessButton,
+							CustomID: "blackjack_join",
+						},
+						discordgo.Button{
+							Label:    "Start",
+							Style:    discordgo.PrimaryButton,
+							CustomID: "blackjack_start",
+						},
+					},
+				},
+			},
 		},
 	})
 	if err != nil {
@@ -129,6 +126,15 @@ func StartBlackjackGame(s BlackjackSession, i *discordgo.InteractionCreate) {
 
 // HandleBlackjackButton handles button presses for blackjack games
 func HandleBlackjackButton(s BlackjackSession, i *discordgo.InteractionCreate) {
+	customID := i.MessageComponentData().CustomID
+
+	// Special case for play again since it doesn't need an existing game
+	if customID == "blackjack_playagain" {
+		// Start a fresh game with the current player as creator
+		StartBlackjackGame(s, i)
+		return
+	}
+
 	// Get the game for this channel
 	game, exists := activeGames[i.ChannelID]
 	if !exists {
@@ -136,7 +142,7 @@ func HandleBlackjackButton(s BlackjackSession, i *discordgo.InteractionCreate) {
 		return
 	}
 
-	switch i.MessageComponentData().CustomID {
+	switch customID {
 	case "blackjack_join":
 		handleJoin(s, i, game)
 	case "blackjack_start":
@@ -205,18 +211,18 @@ func handleJoin(s BlackjackSession, i *discordgo.InteractionCreate, game *Blackj
 	}
 
 	// Update the game message
-	content := fmt.Sprintf("🎲 Blackjack Game (%d/%d players)\nPlayers: %s", len(game.Players), maxPlayers, playerList.String())
+	content := fmt.Sprintf("🎲 **New Blackjack Game**\nGame Owner: **%s** 👑\nPlayers: %s", game.Players[0].Username, playerList.String())
 	buttons := []discordgo.MessageComponent{
 		discordgo.ActionsRow{
 			Components: []discordgo.MessageComponent{
 				discordgo.Button{
-					Label:    "Join Game",
+					Label:    "Join",
 					Style:    discordgo.SuccessButton,
 					CustomID: "blackjack_join",
 					Disabled: len(game.Players) >= maxPlayers,
 				},
 				discordgo.Button{
-					Label:    "Start Game",
+					Label:    "Start",
 					Style:    discordgo.PrimaryButton,
 					CustomID: "blackjack_start",
 					Disabled: len(game.Players) < 1,
@@ -361,7 +367,16 @@ func startGame(s BlackjackSession, i *discordgo.InteractionCreate, game *Blackja
 // formatGameState formats the game state message
 func formatGameState(game *BlackjackGame) string {
 	var sb strings.Builder
-	sb.WriteString("🎲 **Blackjack Game** 🎲\n\n")
+	sb.WriteString("🎲 **Blackjack Game** 🎲\n")
+	
+	// Show game owner
+	for _, player := range game.Players {
+		if player.ID == game.CreatorID {
+			sb.WriteString(fmt.Sprintf("Game Owner: **%s** 👑\n", player.Username))
+			break
+		}
+	}
+	sb.WriteString("\n")
 
 	// Show dealer's hand
 	sb.WriteString("Dealer's hand: ")
@@ -652,11 +667,22 @@ func handleStand(s BlackjackSession, i *discordgo.InteractionCreate, game *Black
 	if game.GameState == Finished {
 		_, err = s.ChannelMessageSendComplex(game.ChannelID, &discordgo.MessageSend{
 			Content: determineWinner(game),
+			Components: []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Play Again",
+							Style:    discordgo.SuccessButton,
+							CustomID: "blackjack_playagain",
+						},
+					},
+				},
+			},
 		})
 		if err != nil {
 			fmt.Printf("Error sending game summary: %v\n", err)
 		}
-		delete(activeGames, game.ChannelID)
+		// Don't delete the game here - let the Play Again handler handle cleanup
 	}
 }
 

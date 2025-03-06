@@ -16,6 +16,7 @@ type Config struct {
 	GuildID   string
 
 	// Resource paths
+	DataDir    string
 	ImagesPath string
 	QuotesPath string
 
@@ -44,6 +45,7 @@ func Load() (*Config, error) {
 		AppID:       os.Getenv("APP_ID"),
 		GuildID:     os.Getenv("GUILD_ID"),
 		Environment: getEnvWithDefault("ENVIRONMENT", "development"),
+		DataDir:     getEnvWithDefault("DATA_DIR", filepath.Join(wd, "data")),
 		ImagesPath:  filepath.Join(wd, "images.txt"),
 		QuotesPath:  filepath.Join(wd, "quotes.txt"),
 	}
@@ -51,6 +53,11 @@ func Load() (*Config, error) {
 	// Validate required fields
 	if err := cfg.validate(); err != nil {
 		return nil, err
+	}
+
+	// Create data directory if it doesn't exist
+	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
 	return cfg, nil

@@ -1,48 +1,87 @@
 package blackjack
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 
 	"github.com/bwmarrin/discordgo"
-	"github.com/fadedpez/tucoramirez/internal/utils"
+	"github.com/fadedpez/tucoramirez/internal/discord"
+	"github.com/fadedpez/tucoramirez/internal/games"
+	"github.com/fadedpez/tucoramirez/internal/types"
 	"github.com/fadedpez/tucoramirez/pkg/cards"
 	"github.com/fadedpez/tucoramirez/pkg/games/common"
+	"github.com/fadedpez/tucoramirez/pkg/storage"
+	"github.com/google/uuid"
 )
 
 const (
-	MaxPlayers = 6
-	StateWaiting = "waiting"
-	StatePlaying = "playing"
-	StateFinished = "finished"
+	MaxPlayers = 4
 )
 
-// Game represents a single game of blackjack
+type GameState string
+
+const (
+	StateWaiting  GameState = "waiting"
+	StatePlaying  GameState = "playing"
+	StateFinished GameState = "finished"
+)
+
+// Game represents a single blackjack game
 type Game struct {
-	Deck          *cards.Deck
-	Players       []*common.Player
-	DealerHand    []cards.Card
-	State         string
-	CreatorID     string
-	ChannelID     string
-	MessageID     string
-	CurrentPlayer int
-	mu            sync.RWMutex
+	ID          string
+	CreatorID   string
+	ChannelID   string
+	MessageID   string
+	Players     map[string]*common.Player
+	DealerHand  []cards.Card
+	Deck        *cards.Deck
+	State       GameState
+	CurrentTurn int
+	mu          sync.RWMutex
 }
+
+// Ensure Game implements the games.Game interface
+var _ games.Game = (*Game)(nil)
 
 // NewGame creates a new blackjack game
 func NewGame(creatorID, channelID string) *Game {
-	deck, _ := cards.NewDeck()
-	deck.Shuffle()
-
 	return &Game{
-		Deck:      deck,
-		Players:   make([]*common.Player, 0, MaxPlayers),
-		State:     StateWaiting,
-		CreatorID: creatorID,
-		ChannelID: channelID,
+		ID:          uuid.New().String(),
+		CreatorID:   creatorID,
+		ChannelID:   channelID,
+		Players:     make(map[string]*common.Player),
+		State:       StateWaiting,
+		Deck:        cards.NewDeck(),
+		DealerHand:  make([]cards.Card, 0),
+		CurrentTurn: 0,
+		mu:          sync.RWMutex{},
 	}
+}
+
+// NewGameFromState creates a new game from a stored state
+func NewGameFromState(state *storage.GameState) *Game {
+	game := NewGame(state.CreatorID, state.ChannelID)
+	game.ID = state.ID
+
+	var gameState struct {
+		Players     map[string]*common.Player `json:"players"`
+		DealerHand  []cards.Card             `json:"dealer_hand"`
+		State       GameState                `json:"state"`
+		CurrentTurn int                      `json:"current_turn"`
+	}
+
+	if err := json.Unmarshal(state.State, &gameState); err != nil {
+		return game
+	}
+
+	game.Players = gameState.Players
+	game.DealerHand = gameState.DealerHand
+	game.State = gameState.State
+	game.CurrentTurn = gameState.CurrentTurn
+
+	return game
 }
 
 // AddPlayer adds a player to the game
@@ -51,246 +90,419 @@ func (g *Game) AddPlayer(player *common.Player) error {
 	defer g.mu.Unlock()
 
 	if len(g.Players) >= MaxPlayers {
-		return utils.NewGameError(utils.ErrTooManyPlayers, "Maximum number of players reached")
+		return types.NewGameError(types.ErrTooManyPlayers, fmt.Sprintf("Game is full (%d/%d players)", len(g.Players), MaxPlayers))
 	}
 
-	g.Players = append(g.Players, player)
+	if _, exists := g.Players[player.ID]; exists {
+		return types.NewGameError(types.ErrAlreadyJoined, "You're already in the game")
+	}
+
+	g.Players[player.ID] = player
 	return nil
-}
-
-// Start begins the game
-func (g *Game) Start() error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	if len(g.Players) < 1 {
-		return utils.NewGameError(utils.ErrNotEnoughPlayers, "Not enough players to start")
-	}
-
-	// Deal initial cards
-	g.dealInitialCards()
-	g.State = StatePlaying
-	g.CurrentPlayer = 0
-	return nil
-}
-
-// dealInitialCards deals two cards to each player and the dealer
-func (g *Game) dealInitialCards() {
-	// Deal to players
-	for i := 0; i < 2; i++ {
-		for _, player := range g.Players {
-			card, _ := g.Deck.Draw()
-			player.AddCard(card)
-		}
-		// Deal to dealer
-		card, _ := g.Deck.Draw()
-		g.DealerHand = append(g.DealerHand, card)
-	}
-
-	// Calculate initial scores
-	for _, player := range g.Players {
-		player.SetScore(calculateScore(player.GetHand()))
-	}
 }
 
 // HandleJoin handles a player joining the game
-func (g *Game) HandleJoin(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	// Check if user is already in the game
-	for _, p := range g.Players {
-		if p.ID == i.Member.User.ID {
-			utils.SendErrorResponse(s, i, utils.NewGameError("ALREADY_JOINED", "You're already in the game!"))
-			return
-		}
-	}
-
-	// Add new player
-	player := &common.Player{
-		ID:       i.Member.User.ID,
-		Username: i.Member.User.Username,
-	}
-	
-	if err := g.AddPlayer(player); err != nil {
-		utils.SendErrorResponse(s, i, err)
+func (g *Game) HandleJoin(s discord.SessionHandler, i *discordgo.InteractionCreate) {
+	// Only allow joining if the game is in waiting state
+	if g.State != StateWaiting {
+		discord.SendErrorResponse(s, i, fmt.Errorf("cannot join game in progress"))
 		return
 	}
 
-	// Update message with new player list
-	content := fmt.Sprintf("🎲 Blackjack Game (%d/%d players)\nPlayers: %s",
-		len(g.Players), MaxPlayers, formatPlayerList(g.Players))
+	// Add the player to the game
+	player := common.NewPlayer(i.Member.User.ID)
+	player.Username = i.Member.User.Username
+	if err := g.AddPlayer(player); err != nil {
+		discord.SendErrorResponse(s, i, fmt.Errorf("failed to add player to game: %w", err))
+		return
+	}
 
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{
-			Content: content,
-			Components: getGameButtons(len(g.Players) >= MaxPlayers, false),
-		},
-	})
-	if err != nil {
-		fmt.Printf("Error updating message: %v\n", err)
+	// Update the game display
+	if err := g.UpdateDisplay(s, i); err != nil {
+		discord.SendErrorResponse(s, i, fmt.Errorf("failed to update game display: %w", err))
+		return
 	}
 }
 
 // HandleStart handles starting the game
-func (g *Game) HandleStart(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
+func (g *Game) HandleStart(s discord.SessionHandler, i *discordgo.InteractionCreate) {
+	// Only allow the creator to start the game
 	if i.Member.User.ID != g.CreatorID {
-		utils.SendErrorResponse(s, i, utils.NewGameError("NOT_CREATOR", "Only the game creator can start the game"))
+		discord.SendErrorResponse(s, i, fmt.Errorf("only the creator can start the game"))
 		return
 	}
 
+	// Start the game
 	if err := g.Start(); err != nil {
-		utils.SendErrorResponse(s, i, err)
+		discord.SendErrorResponse(s, i, fmt.Errorf("failed to start game: %w", err))
 		return
 	}
 
-	// Update message with game state
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{
-			Content: g.formatGameState(),
-			Components: getPlayButtons(false),
-		},
-	})
-	if err != nil {
-		fmt.Printf("Error updating message: %v\n", err)
+	// Update the game display
+	if err := g.UpdateDisplay(s, i); err != nil {
+		discord.SendErrorResponse(s, i, fmt.Errorf("failed to update game display: %w", err))
+		return
+	}
+}
+
+// HandleButton handles button interactions
+func (g *Game) HandleButton(s discord.SessionHandler, i *discordgo.InteractionCreate) {
+	// Get the button ID
+	customID := i.MessageComponentData().CustomID
+	switch customID {
+	case "blackjack_join":
+		g.HandleJoin(s, i)
+	case "blackjack_start":
+		g.HandleStart(s, i)
+	case "blackjack_hit":
+		if err := g.HandleHit(s, i); err != nil {
+			discord.SendErrorResponse(s, i, err)
+			return
+		}
+	case "blackjack_stand":
+		if err := g.HandleStand(s, i); err != nil {
+			discord.SendErrorResponse(s, i, err)
+			return
+		}
+	case "blackjack_playagain":
+		// Just delegate to HandlePlayAgain, let manager handle game replacement
+		_, err := g.HandlePlayAgain(s, i)
+		if err != nil {
+			discord.SendErrorResponse(s, i, err)
+			return
+		}
+		// Don't update display here, HandlePlayAgain already does it
+		return
+	default:
+		discord.SendErrorResponse(s, i, fmt.Errorf("unknown button: %s", customID))
+		return
+	}
+
+	// Update game display
+	if err := discord.UpdateGameResponse(s, i, g.String(), g.GetButtons()); err != nil {
+		discord.SendErrorResponse(s, i, fmt.Errorf("failed to update game: %w", err))
+		return
 	}
 }
 
 // HandleHit handles a player hitting
-func (g *Game) HandleHit(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	if err := g.validatePlayerTurn(i.Member.User.ID); err != nil {
-		utils.SendErrorResponse(s, i, err)
-		return
+func (g *Game) HandleHit(s discord.SessionHandler, i *discordgo.InteractionCreate) error {
+	// First validate without any locks
+	if err := g.ValidatePlayerAction(i.Member.User.ID); err != nil {
+		discord.SendErrorResponse(s, i, err)
+		return err
 	}
 
-	player := g.Players[g.CurrentPlayer]
-	card, _ := g.Deck.Draw()
+	// Then take the write lock for state changes
+	g.mu.Lock()
+	player := g.Players[i.Member.User.ID]
+	card := g.Deck.DrawOne()
 	player.AddCard(card)
 	player.SetScore(calculateScore(player.GetHand()))
 
 	if player.GetScore() > 21 {
-		player.Bust()
+		player.Stand()
 		g.nextPlayer()
 	}
+	g.mu.Unlock()
 
-	// Update message with new game state
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{
-			Content: g.formatGameState(),
-			Components: getPlayButtons(player.HasBusted()),
-		},
-	})
-	if err != nil {
-		fmt.Printf("Error updating message: %v\n", err)
-	}
+	// Update game message
+	return discord.UpdateGameResponse(s, i, g.String(), g.GetButtons())
 }
 
 // HandleStand handles a player standing
-func (g *Game) HandleStand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	if err := g.validatePlayerTurn(i.Member.User.ID); err != nil {
-		utils.SendErrorResponse(s, i, err)
-		return
+func (g *Game) HandleStand(s discord.SessionHandler, i *discordgo.InteractionCreate) error {
+	// First validate without any locks
+	if err := g.ValidatePlayerAction(i.Member.User.ID); err != nil {
+		discord.SendErrorResponse(s, i, err)
+		return err
 	}
 
-	player := g.Players[g.CurrentPlayer]
+	// Then take the write lock for state changes
+	g.mu.Lock()
+	player := g.Players[i.Member.User.ID]
 	player.Stand()
 	g.nextPlayer()
+	g.mu.Unlock()
 
-	var content string
-	var components []discordgo.MessageComponent
-
-	if g.IsFinished() {
-		content = g.determineWinner()
-		components = nil
-	} else {
-		content = g.formatGameState()
-		components = getPlayButtons(false)
-	}
-
-	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseUpdateMessage,
-		Data: &discordgo.InteractionResponseData{
-			Content:    content,
-			Components: components,
-		},
-	})
-	if err != nil {
-		fmt.Printf("Error updating message: %v\n", err)
-	}
+	// Update game message
+	return discord.UpdateGameResponse(s, i, g.String(), g.GetButtons())
 }
 
-// nextPlayer moves to the next player or finishes the game
-func (g *Game) nextPlayer() {
-	g.CurrentPlayer++
-	if g.CurrentPlayer >= len(g.Players) {
-		g.finishGame()
+// Start begins the game
+func (g *Game) Start() error {
+	if len(g.Players) < 1 {
+		return types.NewGameError(types.ErrNotEnoughPlayers, "Need at least 1 player to start")
 	}
-}
 
-// finishGame completes the game and determines the winner
-func (g *Game) finishGame() {
-	g.playDealerHand()
-	g.State = StateFinished
-}
-
-// playDealerHand plays out the dealer's hand
-func (g *Game) playDealerHand() {
-	dealerScore := calculateScore(g.DealerHand)
-	for dealerScore < 17 {
-		card, _ := g.Deck.Draw()
-		g.DealerHand = append(g.DealerHand, card)
-		dealerScore = calculateScore(g.DealerHand)
+	if g.State != StateWaiting {
+		return types.NewGameError(types.ErrGameInProgress, "Game has already started")
 	}
+
+	g.State = StatePlaying
+	g.Deck.Shuffle()
+
+	// Deal initial cards
+	for _, player := range g.Players {
+		card1 := g.Deck.DrawOne()
+		card2 := g.Deck.DrawOne()
+		player.AddCard(card1)
+		player.AddCard(card2)
+		player.SetScore(calculateScore(player.GetHand()))
+	}
+
+	// Deal dealer's cards
+	card1 := g.Deck.DrawOne()
+	card2 := g.Deck.DrawOne()
+	g.DealerHand = []cards.Card{card1, card2}
+
+	return nil
 }
 
-// IsFinished returns whether the game is finished
+// IsFinished checks if the game is over
 func (g *Game) IsFinished() bool {
 	return g.State == StateFinished
 }
 
-// SetMessageID sets the message ID for the game
-func (g *Game) SetMessageID(id string) {
-	g.MessageID = id
-}
+// ValidatePlayerAction checks if the player can perform an action
+func (g *Game) ValidatePlayerAction(playerID string) error {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 
-// validatePlayerTurn checks if it's the player's turn
-func (g *Game) validatePlayerTurn(playerID string) error {
-	if g.State != StatePlaying {
-		return utils.NewGameError(utils.ErrGameAlreadyEnded, "The game has already ended")
+	player, exists := g.Players[playerID]
+	if !exists {
+		return types.NewGameError(types.ErrPlayerNotFound, "You are not in this game")
 	}
-	if g.CurrentPlayer >= len(g.Players) || g.Players[g.CurrentPlayer].ID != playerID {
-		return utils.NewGameError(utils.ErrNotPlayerTurn, "It's not your turn")
+
+	if player.Busted {
+		return types.NewGameError(types.ErrPlayerBusted, "You have already busted")
 	}
+
+	if player.Stood {
+		return types.NewGameError(types.ErrPlayerStanding, "You have already stood")
+	}
+
+	currentPlayer := g.getCurrentPlayer()
+	if currentPlayer == nil || currentPlayer.ID != playerID {
+		return types.NewGameError(types.ErrNotPlayerTurn, "It's not your turn")
+	}
+
 	return nil
 }
 
+// GetButtons returns the appropriate button components for the current game state
+func (g *Game) GetButtons() []discordgo.MessageComponent {
+	if g.State == StateWaiting {
+		return []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						Label:    "Join Game",
+						Style:    discordgo.SuccessButton,
+						CustomID: "blackjack_join",
+						Disabled: len(g.Players) >= MaxPlayers,
+					},
+					discordgo.Button{
+						Label:    "Start Game",
+						Style:    discordgo.PrimaryButton,
+						CustomID: "blackjack_start",
+					},
+				},
+			},
+		}
+	}
+
+	if g.State == StatePlaying {
+		return []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						Label:    "Hit",
+						Style:    discordgo.PrimaryButton,
+						CustomID: "blackjack_hit",
+					},
+					discordgo.Button{
+						Label:    "Stand",
+						Style:    discordgo.DangerButton,
+						CustomID: "blackjack_stand",
+					},
+				},
+			},
+		}
+	}
+
+	if g.State == StateFinished {
+		return []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						Label:    "Play Again",
+						Style:    discordgo.SuccessButton,
+						CustomID: "blackjack_playagain",
+					},
+				},
+			},
+		}
+	}
+
+	return nil
+}
+
+// String returns a string representation of the game state
+func (g *Game) String() string {
+	var sb strings.Builder
+
+	// Show dealer's hand
+	sb.WriteString("🎰 Dealer's Hand:\n")
+	if g.State == StatePlaying {
+		// Show only first card during play
+		sb.WriteString(fmt.Sprintf("  %s, [?]\n", g.DealerHand[0]))
+	} else {
+		// Show all cards at end
+		dealerScore := calculateScore(g.DealerHand)
+		sb.WriteString(fmt.Sprintf("  %s (Score: %d)\n", formatHand(g.DealerHand), dealerScore))
+	}
+
+	// Show players' hands
+	sb.WriteString("\n👥 Players:\n")
+	if g.State == StateWaiting {
+		sb.WriteString(fmt.Sprintf("Waiting for players (%d/%d):\n", len(g.Players), MaxPlayers))
+		for _, p := range g.Players {
+			sb.WriteString(fmt.Sprintf("  %s\n", p.Username))
+		}
+	} else {
+		currentPlayerID := g.getCurrentPlayerID()
+		for _, p := range g.Players {
+			marker := " "
+			if p.ID == currentPlayerID {
+				marker = ">"
+			}
+			sb.WriteString(fmt.Sprintf("%s %s: %s (Score: %d)\n", marker, p.Username, formatHand(p.GetHand()), p.GetScore()))
+		}
+	}
+
+	return sb.String()
+}
+
+// MarshalState returns a JSON representation of the game state
+func (g *Game) MarshalState() json.RawMessage {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	state := struct {
+		Players     map[string]*common.Player `json:"players"`
+		DealerHand  []cards.Card             `json:"dealer_hand"`
+		State       GameState                `json:"state"`
+		CurrentTurn int                      `json:"current_turn"`
+	}{
+		Players:     g.Players,
+		DealerHand:  g.DealerHand,
+		State:       g.State,
+		CurrentTurn: g.CurrentTurn,
+	}
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		return nil
+	}
+	return json.RawMessage(data)
+}
+
+// LoadState loads the game state from a JSON representation
+func (g *Game) LoadState(data json.RawMessage) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	state := struct {
+		Players     map[string]*common.Player `json:"players"`
+		DealerHand  []cards.Card             `json:"dealer_hand"`
+		State       GameState                `json:"state"`
+		CurrentTurn int                      `json:"current_turn"`
+	}{}
+
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("failed to unmarshal game state: %w", err)
+	}
+
+	g.Players = state.Players
+	g.DealerHand = state.DealerHand
+	g.State = state.State
+	g.CurrentTurn = state.CurrentTurn
+
+	return nil
+}
+
+// HandlePlayAgain handles when a player wants to play another game
+func (g *Game) HandlePlayAgain(s discord.SessionHandler, i *discordgo.InteractionCreate) (*Game, error) {
+	// Only allow play again if the game is finished
+	if g.State != StateFinished {
+		return nil, fmt.Errorf("game must be finished before starting a new one")
+	}
+
+	// Only allow the player who clicked to start a new game as the creator
+	playerID := i.Member.User.ID
+
+	// Create a new game with this player as the creator
+	newGame := NewGame(playerID, g.ChannelID)
+
+	// Add the creator as the first player
+	player := common.NewPlayer(playerID)
+	player.Username = i.Member.User.Username
+	if err := newGame.AddPlayer(player); err != nil {
+		return nil, fmt.Errorf("failed to add player to new game: %w", err)
+	}
+
+	return newGame, nil
+}
+
+// UpdateDisplay updates the game display in Discord
+func (g *Game) UpdateDisplay(s discord.SessionHandler, i *discordgo.InteractionCreate) error {
+	return discord.UpdateGameResponse(s, i, g.String(), g.GetButtons())
+}
+
 // Helper functions
+func formatHand(hand []cards.Card) string {
+	cards := make([]string, len(hand))
+	for i, card := range hand {
+		cards[i] = card.String()
+	}
+	return strings.Join(cards, ", ")
+}
 
 func calculateScore(hand []cards.Card) int {
 	score := 0
 	aces := 0
 
 	for _, card := range hand {
-		if card.Rank == "A" {
+		if card.Rank == cards.Ace {
 			aces++
-		} else if card.Rank == "K" || card.Rank == "Q" || card.Rank == "J" {
-			score += 10
 		} else {
-			value := 0
-			fmt.Sscanf(card.Rank, "%d", &value)
-			score += value
+			switch card.Rank {
+			case cards.Two:
+				score += 2
+			case cards.Three:
+				score += 3
+			case cards.Four:
+				score += 4
+			case cards.Five:
+				score += 5
+			case cards.Six:
+				score += 6
+			case cards.Seven:
+				score += 7
+			case cards.Eight:
+				score += 8
+			case cards.Nine:
+				score += 9
+			case cards.Ten:
+				score += 10
+			case cards.Jack:
+				score += 10
+			case cards.Queen:
+				score += 10
+			case cards.King:
+				score += 10
+			}
 		}
 	}
 
@@ -306,120 +518,60 @@ func calculateScore(hand []cards.Card) int {
 	return score
 }
 
-func formatPlayerList(players []*common.Player) string {
-	names := make([]string, len(players))
-	for i, p := range players {
-		names[i] = p.Username
+func (g *Game) getCurrentPlayerID() string {
+	if len(g.Players) == 0 {
+		return ""
 	}
-	return strings.Join(names, ", ")
+
+	playerIDs := make([]string, 0, len(g.Players))
+	for id := range g.Players {
+		playerIDs = append(playerIDs, id)
+	}
+
+	return playerIDs[g.CurrentTurn%len(playerIDs)]
 }
 
-func (g *Game) formatGameState() string {
-	var sb strings.Builder
-
-	// Show dealer's hand
-	sb.WriteString("Dealer: ")
-	if g.State == StatePlaying {
-		// Show only first card during play
-		sb.WriteString(g.DealerHand[0].String())
-		sb.WriteString(" ??\n")
-	} else {
-		// Show full hand at end
-		for i, card := range g.DealerHand {
-			if i > 0 {
-				sb.WriteString(" ")
-			}
-			sb.WriteString(card.String())
-		}
-		sb.WriteString(fmt.Sprintf(" (Score: %d)\n", calculateScore(g.DealerHand)))
+func (g *Game) getCurrentPlayer() *common.Player {
+	if g.CurrentTurn >= len(g.Players) {
+		return nil
 	}
 
-	// Show each player's hand
-	for i, p := range g.Players {
-		sb.WriteString(fmt.Sprintf("\n%s: ", p.Username))
-		for j, card := range p.GetHand() {
-			if j > 0 {
-				sb.WriteString(" ")
-			}
-			sb.WriteString(card.String())
+	i := 0
+	for _, player := range g.Players {
+		if i == g.CurrentTurn {
+			return player
 		}
-		sb.WriteString(fmt.Sprintf(" (Score: %d)", p.GetScore()))
-		if p.HasBusted() {
-			sb.WriteString(" BUST!")
-		} else if p.HasStood() {
-			sb.WriteString(" STAND")
-		} else if i == g.CurrentPlayer {
-			sb.WriteString(" 👈 Your turn!")
-		}
+		i++
 	}
 
-	return sb.String()
+	return nil
 }
 
-func (g *Game) determineWinner() string {
-	dealerScore := calculateScore(g.DealerHand)
-	dealerBusted := dealerScore > 21
+func (g *Game) nextPlayer() {
+	g.CurrentTurn++
 
-	var sb strings.Builder
-	sb.WriteString(g.formatGameState())
-	sb.WriteString("\n\n🏆 Results:\n")
-
+	// Check if all players have stood
+	allStood := true
 	for _, p := range g.Players {
-		playerScore := p.GetScore()
-		if p.HasBusted() {
-			sb.WriteString(fmt.Sprintf("%s: Lost (Bust)\n", p.Username))
-		} else if dealerBusted {
-			sb.WriteString(fmt.Sprintf("%s: Won! (Dealer bust)\n", p.Username))
-		} else if playerScore > dealerScore {
-			sb.WriteString(fmt.Sprintf("%s: Won! (%d > %d)\n", p.Username, playerScore, dealerScore))
-		} else if playerScore < dealerScore {
-			sb.WriteString(fmt.Sprintf("%s: Lost (%d < %d)\n", p.Username, playerScore, dealerScore))
-		} else {
-			sb.WriteString(fmt.Sprintf("%s: Push (%d = %d)\n", p.Username, playerScore, dealerScore))
+		if !p.HasStood() {
+			allStood = false
+			break
 		}
 	}
 
-	return sb.String()
-}
-
-func getGameButtons(joinDisabled bool, startDisabled bool) []discordgo.MessageComponent {
-	return []discordgo.MessageComponent{
-		discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				discordgo.Button{
-					Label:    "Join Game",
-					Style:    discordgo.SuccessButton,
-					CustomID: "blackjack_join",
-					Disabled: joinDisabled,
-				},
-				discordgo.Button{
-					Label:    "Start Game",
-					Style:    discordgo.PrimaryButton,
-					CustomID: "blackjack_start",
-					Disabled: startDisabled,
-				},
-			},
-		},
+	if allStood {
+		g.finishGame()
 	}
 }
 
-func getPlayButtons(disabled bool) []discordgo.MessageComponent {
-	return []discordgo.MessageComponent{
-		discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				discordgo.Button{
-					Label:    "Hit",
-					Style:    discordgo.SuccessButton,
-					CustomID: "blackjack_hit",
-					Disabled: disabled,
-				},
-				discordgo.Button{
-					Label:    "Stand",
-					Style:    discordgo.DangerButton,
-					CustomID: "blackjack_stand",
-					Disabled: disabled,
-				},
-			},
-		},
+func (g *Game) finishGame() {
+	g.State = StateFinished
+
+	// Play dealer's hand
+	dealerScore := calculateScore(g.DealerHand)
+	for dealerScore < 17 {
+		card := g.Deck.DrawOne()
+		g.DealerHand = append(g.DealerHand, card)
+		dealerScore = calculateScore(g.DealerHand)
 	}
 }
