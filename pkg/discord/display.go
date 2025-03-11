@@ -4,15 +4,18 @@ import (
 	"github.com/fadedpez/tucoramirez/pkg/entities"
 )
 
-func formatCards(cards []*entities.Card) string {
+func FormatCards(cards []*entities.Card) string {
 	result := ""
-	for _, card := range cards {
-		result += formatCard(card) + " "
+	for i, card := range cards {
+		result += FormatCard(card)
+		if i < len(cards)-1 {
+			result += ", "
+		}
 	}
 	return result
 }
 
-func formatCard(card *entities.Card) string {
+func FormatCard(card *entities.Card) string {
 	// Map suits to emoji
 	suitEmoji := map[entities.Suit]string{
 		entities.Hearts:   "♥️",
@@ -23,7 +26,7 @@ func formatCard(card *entities.Card) string {
 
 	// Map ranks to emoji
 	rankEmoji := map[entities.Rank]string{
-		entities.Ace:   "A️⃣",
+		entities.Ace:   ":regional_indicator_a:",
 		entities.Two:   "2️⃣",
 		entities.Three: "3️⃣",
 		entities.Four:  "4️⃣",
@@ -33,9 +36,9 @@ func formatCard(card *entities.Card) string {
 		entities.Eight: "8️⃣",
 		entities.Nine:  "9️⃣",
 		entities.Ten:   "🔟",
-		entities.Jack:  "J️⃣",
-		entities.Queen: "Q️⃣",
-		entities.King:  "K️⃣",
+		entities.Jack:  ":regional_indicator_j:",
+		entities.Queen: ":regional_indicator_q:",
+		entities.King:  ":regional_indicator_k:",
 	}
 
 	return rankEmoji[card.Rank] + suitEmoji[card.Suit]

@@ -9,7 +9,9 @@ import (
 )
 
 func (b *Bot) handleReady(s *discordgo.Session, r *discordgo.Ready) {
-	// Register only the blackjack command
+	log.Printf("Bot is ready: %v#%v", s.State.User.Username, s.State.User.Discriminator)
+
+	// Register the blackjack command
 	command := &discordgo.ApplicationCommand{
 		Name:        "blackjack",
 		Description: "¡Juega blackjack conmigo, amigo! Start a new game of blackjack",
@@ -19,80 +21,231 @@ func (b *Bot) handleReady(s *discordgo.Session, r *discordgo.Ready) {
 	if err != nil {
 		log.Printf("Error creating command %v: %v", command.Name, err)
 	}
-
-	// Add component interaction handler for buttons
-	s.AddHandler(b.handleInteractions)
 }
 
 func (b *Bot) handleInteractions(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.Type {
 	case discordgo.InteractionApplicationCommand:
 		if i.ApplicationCommandData().Name == "blackjack" {
-			handleBlackjackCommand(b, s, i)
+			b.handleBlackjackCommand(s, i)
 		}
+
 	case discordgo.InteractionMessageComponent:
-		handleButtonInteraction(b, s, i)
+		switch i.MessageComponentData().CustomID {
+		case "join_game":
+			// Get the lobby
+			channelID := i.ChannelID
+			b.mu.RLock()
+			lobby, exists := b.lobbies[channelID]
+			b.mu.RUnlock()
+
+			if !exists {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "¡Ay caramba! *frantically searches the casino* No lobby found in this channel! Start a new game with /blackjack ",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+
+			// Check if player is already in lobby
+			if _, alreadyJoined := lobby.Players[i.Member.User.ID]; alreadyJoined {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "¡AY, DIOS MÍO! *dramatically adjusts golden rings* ¿Qué pasa contigo, amigo? You're ALREADY at my table! ¡Siéntate y espera! Sit down and wait for the game to start! ",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+
+			// Check if there's a game in progress
+			b.mu.RLock()
+			game, inGame := b.games[channelID]
+			b.mu.RUnlock()
+
+			if inGame {
+				if _, playing := game.Players[i.Member.User.ID]; playing {
+					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+						Type: discordgo.InteractionResponseChannelMessageWithSource,
+						Data: &discordgo.InteractionResponseData{
+							Content: "¡Espera un momento! *counts his chips nervously* You're already playing in a game! Finish that one first, ¿eh? ",
+							Flags:   discordgo.MessageFlagsEphemeral,
+						},
+					})
+					return
+				}
+			}
+
+			// Add player to lobby
+			b.mu.Lock()
+			lobby.Players[i.Member.User.ID] = true
+			b.mu.Unlock()
+
+			// Update lobby display
+			b.displayGameState(s, i, lobby)
+
+		case "start_game":
+			channelID := i.ChannelID
+			b.mu.RLock()
+			lobby, exists := b.lobbies[channelID]
+			b.mu.RUnlock()
+
+			if !exists {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "¡Ay caramba! *frantically searches the casino* No lobby found in this channel! Start a new game with /blackjack ",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+
+			// Verify sender is owner
+			if i.Member.User.ID != lobby.OwnerID {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "¡OIGA! *adjusts golden rings menacingly* Only El Jefe can start the game! ¿Comprende? ",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+
+			// Create new game
+			game := blackjack.NewGame(channelID)
+
+			// Add all lobby players to game
+			for playerID := range lobby.Players {
+				if err := game.AddPlayer(playerID); err != nil {
+					s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+						Type: discordgo.InteractionResponseChannelMessageWithSource,
+						Data: &discordgo.InteractionResponseData{
+							Content: "¡Ay, caramba! *drops cards everywhere* Failed to add players to the game! ",
+							Flags:   discordgo.MessageFlagsEphemeral,
+						},
+					})
+					return
+				}
+			}
+
+			// Start the game
+			if err := game.Start(); err != nil {
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "¡Madre de Dios! *shuffles cards nervously* Failed to start the game! ",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
+
+			// Store game and clean up lobby
+			b.mu.Lock()
+			b.games[channelID] = game
+			delete(b.lobbies, channelID)
+			b.mu.Unlock()
+
+			// Show initial game state
+			b.displayGameState(s, i, game)
+
+		case "play_again":
+			// Clean up the old game first
+			channelID := i.ChannelID
+			b.mu.Lock()
+			delete(b.games, channelID)
+			delete(b.lobbies, channelID)
+			b.mu.Unlock()
+
+			// Start a new game directly
+			b.handleBlackjackCommand(s, i)
+			return
+
+		case "hit", "stand":
+			channelID := i.ChannelID
+
+			// Validate game action for hit/stand
+			game, err := b.validateGameAction(i)
+			if err != nil {
+				respondWithError(s, i, err.Error())
+				return
+			}
+
+			switch i.MessageComponentData().CustomID {
+			case "hit":
+				b.handleGameAction(s, i, game, channelID, func() error {
+					return game.Hit(i.Member.User.ID)
+				})
+
+			case "stand":
+				b.handleGameAction(s, i, game, channelID, func() error {
+					return game.Stand(i.Member.User.ID)
+				})
+			}
+		}
 	}
 }
 
-func handleBlackjackCommand(b *Bot, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Start new game
-	game := blackjack.NewGame(i.ChannelID)
-	b.games[i.ChannelID] = game
-
-	// Add the player
-	if err := game.AddPlayer(i.Member.User.ID); err != nil {
-		respondWithError(s, i, err.Error())
+func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCreate, game *blackjack.Game, channelID string, action func() error) {
+	// Execute the action
+	err := action()
+	if err != nil && err != blackjack.ErrHandBust {
+		respondWithError(s, i, "¡Ay, caramba! Something went wrong: "+err.Error())
 		return
 	}
 
-	// Start the game
-	if err := game.Start(); err != nil {
-		respondWithError(s, i, err.Error())
-		return
+	// Check if all players are done
+	if game.CheckAllPlayersDone() {
+		if !game.CheckAllPlayersBust() {
+			// Play dealer's turn - ignore bust since it's part of the game
+			game.PlayDealer()
+		}
+		game.State = blackjack.StateComplete
 	}
 
-	// Show initial game state with buttons
-	b.displayGameState(s, i, game)
-}
-
-func handleButtonInteraction(b *Bot, s *discordgo.Session, i *discordgo.InteractionCreate) {
-	game, exists := b.games[i.ChannelID]
-	if !exists {
-		respondWithError(s, i, "¡No hay juego activo! Start a new game with /blackjack")
-		return
+	// Update game display with Tuco's dramatic flair
+	embed := createGameEmbed(game, s, i.GuildID)
+	components := createGameButtons(game)
+	
+	// First respond to the interaction
+	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseUpdateMessage,
+		Data: &discordgo.InteractionResponseData{
+			Embeds:     []*discordgo.MessageEmbed{embed},
+			Components: components,
+		},
+	})
+	if err != nil {
+		// If responding fails, try to edit the message directly
+		_, err = s.ChannelMessageEdit(channelID, i.Message.ID, "¡Ay, caramba! Something went wrong with the interaction.")
+		if err != nil {
+			log.Printf("Error updating message: %v", err)
+		}
 	}
 
-	switch i.MessageComponentData().CustomID {
-	case "hit":
-		if err := game.Hit(i.Member.User.ID); err != nil {
-			respondWithError(s, i, err.Error())
-			return
-		}
-		b.displayGameState(s, i, game)
-
-	case "stand":
-		if err := game.Stand(i.Member.User.ID); err != nil {
-			respondWithError(s, i, err.Error())
-			return
-		}
-
-		// Play dealer's turn
-		if err := game.PlayDealer(); err != nil {
-			respondWithError(s, i, err.Error())
-			return
-		}
-
-		b.displayGameState(s, i, game)
+	// Clean up if game is complete
+	if game.State == blackjack.StateComplete {
+		b.mu.Lock()
+		delete(b.games, channelID)
+		delete(b.lobbies, channelID)
+		b.mu.Unlock()
 	}
 }
 
-// validateGameAction checks if a player can perform an action in the current game
-func (b *Bot) validateGameAction(s *discordgo.Session, i *discordgo.InteractionCreate) (*blackjack.Game, error) {
+func (b *Bot) validateGameAction(i *discordgo.InteractionCreate) (*blackjack.Game, error) {
 	channelID := i.ChannelID
 	playerID := i.Member.User.ID
 
+	b.mu.RLock()
 	game, exists := b.games[channelID]
+	b.mu.RUnlock()
+
 	if !exists {
 		return nil, fmt.Errorf("¡Oye! There's no game running in this channel! Start one with /blackjack")
 	}
@@ -102,103 +255,119 @@ func (b *Bot) validateGameAction(s *discordgo.Session, i *discordgo.InteractionC
 		return nil, fmt.Errorf("¡Eh, amigo! You're not in this game! Wait for it to finish")
 	}
 
+	// For hit/stand actions, check if player can still play
 	if playerHand.Status != blackjack.StatusPlaying {
 		switch playerHand.Status {
 		case blackjack.StatusBust:
 			return nil, fmt.Errorf("¡Ay, Dios mío! You already bust! Wait for the next game")
 		case blackjack.StatusStand:
-			return nil, fmt.Errorf("¡Tranquilo! You already stood! Wait for the next game")
+			return nil, fmt.Errorf("¡Tranquilo! You already stood, amigo! Wait for the next game")
+		default:
+			return nil, fmt.Errorf("¡No más! You can't play right now! Wait for the next game")
 		}
 	}
 
 	return game, nil
 }
 
-// Then update handleBlackjackCommand:
 func (b *Bot) handleBlackjackCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	channelID := i.ChannelID
 
-	// Check if there's already a game running
-	if game, exists := b.games[channelID]; exists {
-		if _, playing := game.Players[i.Member.User.ID]; playing {
-			respondWithError(s, i, "¡Paciencia! You're already in a game!")
-			return
+	// Check if there's already a game or lobby in this channel
+	b.mu.RLock()
+	_, gameExists := b.games[channelID]
+	_, lobbyExists := b.lobbies[channelID]
+	b.mu.RUnlock()
+
+	if gameExists {
+		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "¡Ay caramba! *adjusts golden rings nervously* There's already a game in progress! Wait for it to finish, ¿eh?",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		if err != nil {
+			log.Printf("Error responding to command: %v", err)
 		}
-		respondWithError(s, i, "¡Espera! There's already a game in progress!")
 		return
 	}
 
-	// Create new game
-	game := blackjack.NewGame(channelID)
+	if lobbyExists {
+		err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: "¡Oye! *polishes cards frantically* There's already a lobby in this channel! Join that one instead!",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			},
+		})
+		if err != nil {
+			log.Printf("Error responding to command: %v", err)
+		}
+		return
+	}
 
-	// Add player to the game
-	err := game.AddPlayer(i.Member.User.ID)
+	// Create new lobby
+	lobby := &GameLobby{
+		OwnerID: i.Member.User.ID,
+		Players: make(map[string]bool),
+	}
+	lobby.Players[i.Member.User.ID] = true
+
+	// Store the lobby
+	b.mu.Lock()
+	b.lobbies[channelID] = lobby
+	b.mu.Unlock()
+
+	// Respond immediately with initial message and lobby state
+	embed := createLobbyEmbed(lobby)
+	components := createLobbyButtons(lobby.OwnerID)
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Content:    "¡Bienvenidos! *Tuco shuffles the cards with flair* Who's ready to play?",
+			Embeds:     []*discordgo.MessageEmbed{embed},
+			Components: components,
+		},
+	})
 	if err != nil {
-		respondWithError(s, i, "¡Ay, caramba! Failed to add you to the game: "+err.Error())
-		return
+		log.Printf("Error responding with lobby: %v", err)
+		b.mu.Lock()
+		delete(b.lobbies, channelID)
+		b.mu.Unlock()
 	}
-
-	// Deal initial cards
-	err = game.Start()
-	if err != nil {
-		respondWithError(s, i, "¡Madre de Dios! Failed to deal cards: "+err.Error())
-		return
-	}
-
-	// Store game in bot's game map
-	b.games[channelID] = game
-
-	// Display initial game state
-	b.displayGameState(s, i, game)
 }
 
-// And update handleButton for hit/stand:
-func (b *Bot) handleButton(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Handle play again button
-	if i.MessageComponentData().CustomID == "play_again" {
-		// Start a new game directly
-		b.handleBlackjackCommand(s, i)
-		return
-	}
-
-	// Validate game action for hit/stand
-	game, err := b.validateGameAction(s, i)
-	if err != nil {
-		respondWithError(s, i, err.Error())
-		return
-	}
-
-	switch i.MessageComponentData().CustomID {
-	case "hit":
-		err = game.Hit(i.Member.User.ID)
-	case "stand":
-		err = game.Stand(i.Member.User.ID)
-
-		// Check if all players are done and at least one player hasn't bust
-		if err == nil && game.CheckAllPlayersDone() {
-			if !game.CheckAllPlayersBust() {
-				// Only play dealer's turn if someone hasn't bust
-				err = game.PlayDealer()
-			} else {
-				// Everyone bust, just mark game as complete
-				game.State = blackjack.StateComplete
-			}
-		}
-	}
-
-	if err != nil {
-		respondWithError(s, i, "¡Ay, caramba! Something went wrong: "+err.Error())
-		return
-	}
-
-	// Check if game is over (all players done or dealer finished)
-	if game.CheckAllPlayersDone() || game.State == blackjack.StateComplete {
-		// Show results instead of game state
-		b.displayGameResults(s, i, game)
-		// Clean up the game
-		delete(b.games, i.ChannelID)
+func (b *Bot) displayGameState(s *discordgo.Session, i *discordgo.InteractionCreate, gameState interface{}) {
+	var responseType discordgo.InteractionResponseType
+	if i.Type == discordgo.InteractionApplicationCommand {
+		responseType = discordgo.InteractionResponseChannelMessageWithSource
 	} else {
-		// Show normal game state
-		b.displayGameState(s, i, game)
+		responseType = discordgo.InteractionResponseUpdateMessage
+	}
+
+	switch gameState := gameState.(type) {
+	case *GameLobby:
+		embed := createLobbyEmbed(gameState)
+		components := createLobbyButtons(gameState.OwnerID)
+
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: responseType,
+			Data: &discordgo.InteractionResponseData{
+				Embeds:     []*discordgo.MessageEmbed{embed},
+				Components: components,
+			},
+		})
+	case *blackjack.Game:
+		embed := createGameEmbed(gameState, s, i.GuildID)
+		components := createGameButtons(gameState)
+
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: responseType,
+			Data: &discordgo.InteractionResponseData{
+				Embeds:     []*discordgo.MessageEmbed{embed},
+				Components: components,
+			},
+		})
 	}
 }

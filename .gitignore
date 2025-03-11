@@ -1,3 +1,6 @@
+# Environment variables
+.env
+
 # Go build and test files
 *.exe
 *.exe~
@@ -7,13 +10,6 @@
 *.test
 *.out
 
-# Go workspace file
-go.work
-
-# Environment files (for Discord token)
-.env
-*.env
-
 # IDE specific files
 .idea/
 .vscode/
@@ -22,12 +18,4 @@ go.work
 
 # OS specific files
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
-
-# Binary output directories
-bin/

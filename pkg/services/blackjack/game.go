@@ -252,34 +252,3 @@ func (g *Game) CheckAllPlayersBust() bool {
 	}
 	return true
 }
-
-// Add to game.go:
-
-// CheckPlayerDone checks if a player is no longer able to take actions
-func (g *Game) CheckPlayerDone(playerID string) bool {
-	hand, exists := g.Players[playerID]
-	if !exists {
-		return true
-	}
-	return hand.Status != StatusPlaying
-}
-
-// CheckAllPlayersDone checks if all players have either bust or stood
-func (g *Game) CheckAllPlayersDone() bool {
-	for _, hand := range g.Players {
-		if hand.Status == StatusPlaying {
-			return false
-		}
-	}
-	return true
-}
-
-// CheckAllPlayersBust checks if all players have bust
-func (g *Game) CheckAllPlayersBust() bool {
-	for _, hand := range g.Players {
-		if hand.Status != StatusBust {
-			return false
-		}
-	}
-	return true
-}
