@@ -156,9 +156,21 @@ func (b *Bot) handleInteractions(s *discordgo.Session, i *discordgo.InteractionC
 			b.displayGameState(s, i, game)
 
 		case "play_again":
-			// Clean up the old game first
 			channelID := i.ChannelID
 			b.mu.Lock()
+			_, otherGameExists := b.games[channelID]
+			_, otherLobbyExists := b.lobbies[channelID]
+			if otherGameExists || otherLobbyExists {
+				b.mu.Unlock()
+				s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+					Type: discordgo.InteractionResponseChannelMessageWithSource,
+					Data: &discordgo.InteractionResponseData{
+						Content: "¡Ay caramba! *adjusts golden rings nervously* There's already another game or lobby in this channel! Wait for it to finish, ¿eh?",
+						Flags:   discordgo.MessageFlagsEphemeral,
+					},
+				})
+				return
+			}
 			delete(b.games, channelID)
 			delete(b.lobbies, channelID)
 			b.mu.Unlock()
@@ -212,7 +224,7 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 	// Update game display with Tuco's dramatic flair
 	embed := createGameEmbed(game, s, i.GuildID)
 	components := createGameButtons(game)
-	
+
 	// First respond to the interaction
 	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseUpdateMessage,
