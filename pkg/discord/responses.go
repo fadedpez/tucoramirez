@@ -112,7 +112,7 @@ func createGameButtons(game *blackjack.Game) []discordgo.MessageComponent {
 			discordgo.ActionsRow{
 				Components: []discordgo.MessageComponent{
 					discordgo.Button{
-						Label:    "¡Juega otra vez!",
+						Label:    "Play Again",
 						Style:    discordgo.PrimaryButton,
 						CustomID: "play_again",
 					},
@@ -213,12 +213,12 @@ func createLobbyButtons(ownerID string) []discordgo.MessageComponent {
 			Components: []discordgo.MessageComponent{
 				discordgo.Button{
 					CustomID: "join_game",
-					Label:    "¡Me uno! (Join Game)",
+					Label:    "Join",
 					Style:    discordgo.PrimaryButton,
 				},
 				discordgo.Button{
 					CustomID: "start_game",
-					Label:    "¡Vamos! (Start Game)",
+					Label:    "Start",
 					Style:    discordgo.SuccessButton,
 				},
 			},
