@@ -1,9 +1,14 @@
 package blackjack
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"log"
+	"time"
 
 	"github.com/fadedpez/tucoramirez/pkg/entities"
+	"github.com/fadedpez/tucoramirez/pkg/repositories/game"
 )
 
 var (
@@ -13,38 +18,48 @@ var (
 	ErrInvalidAction  = errors.New("invalid action for current game state")
 )
 
-type GameState string
+// BlackjackDetails contains game-specific result details
+type BlackjackDetails struct {
+	DealerScore int
+	IsBlackjack bool
+	IsBust      bool
+}
 
-const (
-	StateWaiting  GameState = "WAITING"  // Waiting for players
-	StateDealing  GameState = "DEALING"  // Initial deal in progress
-	StatePlaying  GameState = "PLAYING"  // Players taking turns
-	StateDealer   GameState = "DEALER"   // Dealer's turn
-	StateComplete GameState = "COMPLETE" // Round complete
-)
+func (d *BlackjackDetails) GameType() entities.GameState {
+	return entities.StateDealing // we'll need to add a GameTypeBlackjack constant
+}
+
+func (d *BlackjackDetails) ValidateDetails() error {
+	if d.DealerScore < 0 || d.DealerScore > 31 {
+		return errors.New("invalid dealer score")
+	}
+	return nil
+}
 
 type Game struct {
 	ID        string
-	State     GameState
+	State     entities.GameState
 	Deck      *entities.Deck
 	Players   map[string]*Hand // PlayerID -> Hand
 	Dealer    *Hand
 	shuffled  bool // Flag to track if the deck has been shuffled
 	ChannelID string
+	repo      game.Repository
 }
 
-func NewGame(channelID string) *Game {
+func NewGame(channelID string, repo game.Repository) *Game {
 	return &Game{
-		State:     StateWaiting,
+		State:     entities.StateWaiting,
 		Players:   make(map[string]*Hand),
 		Dealer:    NewHand(),
 		ChannelID: channelID,
+		repo:      repo,
 	}
 }
 
 // AddPlayer adds a player to the game
 func (g *Game) AddPlayer(playerID string) error {
-	if g.State != StateWaiting {
+	if g.State != entities.StateWaiting {
 		return ErrGameInProgress
 	}
 	g.Players[playerID] = NewHand()
@@ -53,11 +68,30 @@ func (g *Game) AddPlayer(playerID string) error {
 
 // Start initializes the game with a fresh deck and deals initial cards
 func (g *Game) Start() error {
-	if g.State != StateWaiting {
+	if g.State != entities.StateWaiting {
 		return ErrGameInProgress
 	}
 	if len(g.Players) == 0 {
 		return errors.New("no players in game")
+	}
+
+	// Try to load existing deck from repository
+	deck, err := g.repo.GetDeck(context.Background(), g.ChannelID)
+	if err != nil {
+		return fmt.Errorf("failed to load deck: %v", err)
+	}
+
+	// Create a new deck if none exists
+	if deck == nil {
+		g.Deck = entities.NewDeck()
+		g.Deck.Shuffle()
+
+		// Save the new deck to the repository
+		if err := g.repo.SaveDeck(context.Background(), g.ChannelID, g.Deck.Cards); err != nil {
+			return fmt.Errorf("failed to save deck: %v", err)
+		}
+	} else {
+		g.Deck = &entities.Deck{Cards: deck}
 	}
 
 	// Only create a new deck if we don't have one or we need to reshuffle
@@ -80,13 +114,18 @@ func (g *Game) Start() error {
 		}
 	}
 
-	g.State = StatePlaying
+	// Save the deck state after dealing
+	if err := g.repo.SaveDeck(context.Background(), g.ChannelID, g.Deck.Cards); err != nil {
+		return fmt.Errorf("failed to save deck: %v", err)
+	}
+
+	g.State = entities.StatePlaying
 	return nil
 }
 
 // Hit adds a card to the player's hand
 func (g *Game) Hit(playerID string) error {
-	if g.State != StatePlaying {
+	if g.State != entities.StatePlaying {
 		return ErrInvalidAction
 	}
 
@@ -113,7 +152,7 @@ func (g *Game) Hit(playerID string) error {
 
 // Stand marks the player's hand as complete
 func (g *Game) Stand(playerID string) error {
-	if g.State != StatePlaying {
+	if g.State != entities.StatePlaying {
 		return ErrInvalidAction
 	}
 
@@ -127,24 +166,26 @@ func (g *Game) Stand(playerID string) error {
 
 // PlayDealer executes dealer's turn according to house rules
 func (g *Game) PlayDealer() error {
-	if g.State != StatePlaying && g.State != StateDealer {
+	if g.State != entities.StatePlaying && g.State != entities.StateDealer {
 		return ErrInvalidAction
 	}
 
-	g.State = StateDealer
+	g.State = entities.StateDealer
 
 	// Dealer must hit on 16 and below, stand on 17 and above
 	for GetBestScore(g.Dealer.Cards) < 17 {
 		card := g.Deck.Draw()
 		if card == nil {
-			return errors.New("no cards remaining")
+			g.Deck = NewBlackjackDeck()
+			g.shuffled = true
+			card = g.Deck.Draw()
 		}
 		if err := g.Dealer.AddCard(card); err != nil {
 			return err
 		}
 	}
 
-	g.State = StateComplete
+	g.State = entities.StateComplete
 	return nil
 }
 
@@ -167,12 +208,14 @@ type HandResult struct {
 
 // GetResults evaluates all hands against the dealer and returns results
 func (g *Game) GetResults() ([]HandResult, error) {
-	if g.State != StateComplete {
+	if g.State != entities.StateComplete {
 		return nil, ErrInvalidAction
 	}
 
 	results := make([]HandResult, 0, len(g.Players))
+	playerResults := make([]*entities.PlayerResult, 0, len(g.Players))
 	dealerBJ := IsBlackjack(g.Dealer.Cards)
+	dealerScore := GetBestScore(g.Dealer.Cards)
 
 	for playerID, hand := range g.Players {
 		result := HandResult{PlayerID: playerID}
@@ -182,6 +225,13 @@ func (g *Game) GetResults() ([]HandResult, error) {
 			result.Result = ResultLose
 			result.Score = GetBestScore(hand.Cards)
 			results = append(results, result)
+
+			// Add player result
+			playerResults = append(playerResults, &entities.PlayerResult{
+				PlayerID: playerID,
+				Result:   entities.Result(result.Result),
+				Score:    result.Score,
+			})
 			continue
 		}
 
@@ -192,33 +242,63 @@ func (g *Game) GetResults() ([]HandResult, error) {
 			} else {
 				result.Result = ResultBlackjack
 			}
-			result.Score = 21
-			results = append(results, result)
-			continue
-		}
-
-		// Handle dealer bust
-		if IsBust(g.Dealer.Cards) {
-			result.Result = ResultWin
 			result.Score = GetBestScore(hand.Cards)
 			results = append(results, result)
+
+			// Add player result
+			playerResults = append(playerResults, &entities.PlayerResult{
+				PlayerID: playerID,
+				Result:   entities.Result(result.Result),
+				Score:    result.Score,
+			})
 			continue
 		}
 
-		// Compare scores
+		// Compare scores for non-blackjack hands
 		playerScore := GetBestScore(hand.Cards)
 		result.Score = playerScore
 
-		switch CompareHands(hand.Cards, g.Dealer.Cards) {
-		case 1:
-			result.Result = ResultWin
-		case -1:
+		if dealerBJ {
 			result.Result = ResultLose
-		case 0:
+		} else if IsBust(g.Dealer.Cards) {
+			result.Result = ResultWin
+		} else if playerScore > dealerScore {
+			result.Result = ResultWin
+		} else if playerScore < dealerScore {
+			result.Result = ResultLose
+		} else {
 			result.Result = ResultPush
 		}
 
 		results = append(results, result)
+
+		// Add player result
+		playerResults = append(playerResults, &entities.PlayerResult{
+			PlayerID: playerID,
+			Result:   entities.Result(result.Result),
+			Score:    result.Score,
+		})
+	}
+
+	gameResult := &entities.GameResult{
+		ChannelID:     g.ChannelID,
+		GameType:      entities.StateDealing,
+		CompletedAt:   time.Now(),
+		PlayerResults: playerResults,
+		Details: &BlackjackDetails{
+			DealerScore: dealerScore,
+			IsBlackjack: dealerBJ,
+			IsBust:      IsBust(g.Dealer.Cards),
+		},
+	}
+
+	if err := g.repo.SaveGameResult(context.Background(), gameResult); err != nil {
+		log.Printf("Failed to save game result: %v", err)
+	}
+
+	// Save final deck state for next game
+	if err := g.repo.SaveDeck(context.Background(), g.ChannelID, g.Deck.Cards); err != nil {
+		log.Printf("Failed to save final deck state: %v", err)
 	}
 
 	return results, nil
@@ -251,4 +331,11 @@ func (g *Game) CheckAllPlayersBust() bool {
 		}
 	}
 	return true
+}
+
+// WasShuffled returns true if the deck was shuffled during the last operation
+func (g *Game) WasShuffled() bool {
+	wasShuffled := g.shuffled
+	g.shuffled = false // Reset the flag
+	return wasShuffled
 }

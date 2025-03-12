@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/fadedpez/tucoramirez/pkg/entities"
 	"github.com/fadedpez/tucoramirez/pkg/services/blackjack"
 )
 
@@ -55,7 +56,7 @@ func createGameEmbed(game *blackjack.Game, s *discordgo.Session, guildID string)
 	}
 
 	// Add game result message if game is complete
-	if game.State == blackjack.StateComplete {
+	if game.State == entities.StateComplete {
 		embed.Description = getGameResultsDescription(game, s, guildID)
 	}
 
@@ -107,7 +108,7 @@ func getGameResultsDescription(game *blackjack.Game, s *discordgo.Session, guild
 
 // createGameButtons creates the action buttons if the game is in progress
 func createGameButtons(game *blackjack.Game) []discordgo.MessageComponent {
-	if game.State != blackjack.StatePlaying {
+	if game.State != entities.StatePlaying {
 		return []discordgo.MessageComponent{
 			discordgo.ActionsRow{
 				Components: []discordgo.MessageComponent{
@@ -145,7 +146,7 @@ func createDealerField(game *blackjack.Game) *discordgo.MessageEmbedField {
 	dealerStatus := getStatusMessage(game.Dealer.Status)
 
 	var dealerValue string
-	if game.State == blackjack.StateComplete {
+	if game.State == entities.StateComplete {
 		// Show all cards at the end of the game
 		dealerValue = fmt.Sprintf("%s\nScore: %d%s", FormatCards(game.Dealer.Cards), dealerScore, dealerStatus)
 	} else {

@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/fadedpez/tucoramirez/pkg/repositories/game"
 	"github.com/fadedpez/tucoramirez/pkg/services/blackjack"
 )
 
@@ -22,6 +23,9 @@ type Bot struct {
 	mu      sync.RWMutex // Protects games and lobbies maps
 	games   map[string]*blackjack.Game
 	lobbies map[string]*GameLobby
+
+	// Storage repository
+	repo game.Repository
 }
 
 // NewBot creates a new instance of the bot
@@ -36,6 +40,7 @@ func NewBot(token string) (*Bot, error) {
 		token:   token,
 		games:   make(map[string]*blackjack.Game),
 		lobbies: make(map[string]*GameLobby),
+		repo:    game.NewMemoryRepository(),  // Initialize the repository
 	}
 
 	// Register handlers

@@ -5,6 +5,7 @@ import (
 	"log"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/fadedpez/tucoramirez/pkg/entities"
 	"github.com/fadedpez/tucoramirez/pkg/services/blackjack"
 )
 
@@ -118,7 +119,7 @@ func (b *Bot) handleInteractions(s *discordgo.Session, i *discordgo.InteractionC
 			}
 
 			// Create new game
-			game := blackjack.NewGame(channelID)
+			game := blackjack.NewGame(channelID, b.repo)
 
 			// Add all lobby players to game
 			for playerID := range lobby.Players {
@@ -218,7 +219,7 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 			// Play dealer's turn - ignore bust since it's part of the game
 			game.PlayDealer()
 		}
-		game.State = blackjack.StateComplete
+		game.State = entities.StateComplete
 	}
 
 	// Update game display with Tuco's dramatic flair
@@ -242,7 +243,7 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 
 	// Clean up if game is complete
-	if game.State == blackjack.StateComplete {
+	if game.State == entities.StateComplete {
 		b.mu.Lock()
 		delete(b.games, channelID)
 		delete(b.lobbies, channelID)
@@ -371,6 +372,13 @@ func (b *Bot) displayGameState(s *discordgo.Session, i *discordgo.InteractionCre
 			},
 		})
 	case *blackjack.Game:
+		// Check if deck was shuffled
+		if gameState.WasShuffled() {
+			// Send a message about shuffling
+			s.ChannelMessageSend(i.ChannelID, "*We've been playing a long time eh my friends? Let Tuco shuffle the deck, maybe it bring Tuco more luck.* ")
+		}
+
+		// Create the game state embed
 		embed := createGameEmbed(gameState, s, i.GuildID)
 		components := createGameButtons(gameState)
 
