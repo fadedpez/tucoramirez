@@ -45,6 +45,10 @@ type Game struct {
 	shuffled  bool // Flag to track if the deck has been shuffled
 	ChannelID string
 	repo      game.Repository
+	
+	// Turn tracking
+	PlayerOrder []string // Ordered list of player IDs
+	CurrentTurn int      // Index into PlayerOrder
 }
 
 func NewGame(channelID string, repo game.Repository) *Game {
@@ -125,6 +129,13 @@ func (g *Game) Start() error {
 		return fmt.Errorf("failed to save deck: %v", err)
 	}
 
+	// Set up player order
+	g.PlayerOrder = make([]string, 0, len(g.Players))
+	for playerID := range g.Players {
+		g.PlayerOrder = append(g.PlayerOrder, playerID)
+	}
+	g.CurrentTurn = 0
+
 	g.State = entities.StatePlaying
 	return nil
 }
@@ -133,6 +144,11 @@ func (g *Game) Start() error {
 func (g *Game) Hit(playerID string) error {
 	if g.State != entities.StatePlaying {
 		return ErrInvalidAction
+	}
+
+	// Check if it's this player's turn
+	if !g.IsPlayerTurn(playerID) {
+		return errors.New("not your turn")
 	}
 
 	hand, exists := g.Players[playerID]
@@ -150,6 +166,10 @@ func (g *Game) Hit(playerID string) error {
 	}
 
 	if err := hand.AddCard(card); err != nil {
+		// If the player busts or has another error, advance to the next player's turn
+		if err == ErrHandBust {
+			g.AdvanceTurn()
+		}
 		return err
 	}
 
@@ -162,12 +182,23 @@ func (g *Game) Stand(playerID string) error {
 		return ErrInvalidAction
 	}
 
+	// Check if it's this player's turn
+	if !g.IsPlayerTurn(playerID) {
+		return errors.New("not your turn")
+	}
+
 	hand, exists := g.Players[playerID]
 	if !exists {
 		return ErrPlayerNotFound
 	}
 
-	return hand.Stand()
+	err := hand.Stand()
+	if err == nil {
+		// Advance to next player's turn
+		g.AdvanceTurn()
+	}
+
+	return err
 }
 
 // PlayDealer executes dealer's turn according to house rules
@@ -344,4 +375,34 @@ func (g *Game) WasShuffled() bool {
 	wasShuffled := g.shuffled
 	g.shuffled = false // Reset the flag
 	return wasShuffled
+}
+
+// GetCurrentTurnPlayerID returns the ID of the player whose turn it is
+func (g *Game) GetCurrentTurnPlayerID() (string, error) {
+	if g.State != entities.StatePlaying {
+		return "", ErrInvalidAction
+	}
+	if len(g.PlayerOrder) == 0 {
+		return "", errors.New("no players in game")
+	}
+	return g.PlayerOrder[g.CurrentTurn], nil
+}
+
+// AdvanceTurn moves to the next player's turn
+func (g *Game) AdvanceTurn() {
+	g.CurrentTurn = (g.CurrentTurn + 1) % len(g.PlayerOrder)
+	
+	// Skip players who are done (bust or stand)
+	for g.CheckPlayerDone(g.PlayerOrder[g.CurrentTurn]) && !g.CheckAllPlayersDone() {
+		g.CurrentTurn = (g.CurrentTurn + 1) % len(g.PlayerOrder)
+	}
+}
+
+// IsPlayerTurn checks if it's the specified player's turn
+func (g *Game) IsPlayerTurn(playerID string) bool {
+	currentPlayer, err := g.GetCurrentTurnPlayerID()
+	if err != nil {
+		return false
+	}
+	return playerID == currentPlayer
 }
