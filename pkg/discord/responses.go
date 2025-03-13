@@ -8,19 +8,13 @@ import (
 	"github.com/fadedpez/tucoramirez/pkg/services/blackjack"
 )
 
-// respondWithError sends an error message as an ephemeral response
-func respondWithError(s *discordgo.Session, i *discordgo.InteractionCreate, message string) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: "¡Ay, caramba! " + message,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		},
-	})
+// SessionInterface defines the methods needed from a Discord session
+type SessionInterface interface {
+	GuildMember(guildID, userID string, options ...discordgo.RequestOption) (*discordgo.Member, error)
 }
 
 // createGameEmbed creates the message embed showing the game state
-func createGameEmbed(game *blackjack.Game, s *discordgo.Session, guildID string) *discordgo.MessageEmbed {
+func createGameEmbed(game *blackjack.Game, s SessionInterface, guildID string) *discordgo.MessageEmbed {
 	embed := &discordgo.MessageEmbed{
 		Title: "¡Blackjack con Tuco!",
 		Color: 0xFFD700, // Gold color for that bandit style
@@ -89,7 +83,7 @@ func createGameEmbed(game *blackjack.Game, s *discordgo.Session, guildID string)
 }
 
 // getGameResultsDescription returns a summary of all players' results
-func getGameResultsDescription(game *blackjack.Game, s *discordgo.Session, guildID string) string {
+func getGameResultsDescription(game *blackjack.Game, s SessionInterface, guildID string) string {
 	dealerScore := blackjack.GetBestScore(game.Dealer.Cards)
 	var results string
 
@@ -108,12 +102,23 @@ func getGameResultsDescription(game *blackjack.Game, s *discordgo.Session, guild
 			playerResult = " 💥 ¡BUST!"
 		case dealerScore > 21:
 			playerResult = " 💰 ¡GANADOR!"
-		case playerScore > dealerScore:
-			playerResult = " 💰 ¡GANADOR!"
-		case playerScore < dealerScore:
+		case blackjack.CompareHands(hand.Cards, game.Dealer.Cards) > 0:
+			// Player wins (including blackjack over non-blackjack 21)
+			if blackjack.IsBlackjack(hand.Cards) {
+				playerResult = " 💰 ¡BLACKJACK! ¡GANADOR!"
+			} else {
+				playerResult = " 💰 ¡GANADOR!"
+			}
+		case blackjack.CompareHands(hand.Cards, game.Dealer.Cards) < 0:
+			// Dealer wins
 			playerResult = " 💔 ¡PERDEDOR!"
-		case playerScore == dealerScore:
-			playerResult = ":beers: ¡EMPATE!"
+		case blackjack.CompareHands(hand.Cards, game.Dealer.Cards) == 0:
+			// Push (tie)
+			if blackjack.IsBlackjack(hand.Cards) && blackjack.IsBlackjack(game.Dealer.Cards) {
+				playerResult = ":beers: ¡EMPATE con BLACKJACK!"
+			} else {
+				playerResult = ":beers: ¡EMPATE!"
+			}
 		}
 
 		// Get member info for display name

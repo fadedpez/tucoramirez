@@ -45,7 +45,7 @@ type Game struct {
 	shuffled  bool // Flag to track if the deck has been shuffled
 	ChannelID string
 	repo      game.Repository
-	
+
 	// Turn tracking
 	PlayerOrder []string // Ordered list of player IDs
 	CurrentTurn int      // Index into PlayerOrder
@@ -391,7 +391,7 @@ func (g *Game) GetCurrentTurnPlayerID() (string, error) {
 // AdvanceTurn moves to the next player's turn
 func (g *Game) AdvanceTurn() {
 	g.CurrentTurn = (g.CurrentTurn + 1) % len(g.PlayerOrder)
-	
+
 	// Skip players who are done (bust or stand)
 	for g.CheckPlayerDone(g.PlayerOrder[g.CurrentTurn]) && !g.CheckAllPlayersDone() {
 		g.CurrentTurn = (g.CurrentTurn + 1) % len(g.PlayerOrder)
