@@ -122,6 +122,18 @@ func (b *Bot) handleJoinGame(s *discordgo.Session, i *discordgo.InteractionCreat
 		return
 	}
 
+	// Check if player is already in the lobby
+	if _, alreadyJoined := lobby.Players[i.Member.User.ID]; alreadyJoined {
+		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: "¡Tranquilo, amigo! *adjusts sunglasses* You're already at the table! Just wait for the game to start.",
+			Flags:   discordgo.MessageFlagsEphemeral,
+		})
+		if err != nil {
+			log.Printf("Error sending followup message: %v", err)
+		}
+		return
+	}
+
 	if gameExists {
 		if _, playing := game.Players[i.Member.User.ID]; playing {
 			_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
@@ -276,6 +288,18 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 		if err == blackjack.ErrHandBust {
 			log.Printf("Player %s busted! This is a valid game state, not an error.", i.Member.User.ID)
 			err = nil // Clear the error since bust is a valid game state
+			
+			// After bust, check if all players are done and set game state if needed
+			if game.CheckAllPlayersDone() {
+				if !game.CheckAllPlayersBust() {
+					// Play dealer's turn if not all players bust
+					err = game.PlayDealer()
+				} else {
+					// All players bust, set game state to complete
+					game.State = entities.StateComplete
+					log.Printf("All players bust in channel %s, setting game to complete", i.ChannelID)
+				}
+			}
 		}
 	case "stand":
 		err = game.Stand(i.Member.User.ID)
