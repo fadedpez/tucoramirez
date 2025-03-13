@@ -362,6 +362,45 @@ This architecture allows us to:
 3. Process results uniformly at the repository level
 4. Add new games without modifying core game state logic
 
+### Gameplay Features
+
+### Blackjack
+
+#### Turn-Based Player Actions
+The blackjack game implements a turn-based system for player actions:
+
+- Players take turns in the order they joined the game
+- A pointing finger emoji (👉) indicates whose turn it is currently
+- Only the current player can take actions (hit/stand)
+- Players who try to act out of turn receive a friendly message
+- The turn automatically advances after a player stands or busts
+- Once all players have completed their turns, the dealer plays according to house rules
+- The `PlayerOrder` slice maintains consistent player ordering for both turns and UI display
+
+This system ensures fair gameplay while maintaining the social dynamics of a card game. The visual indicator makes it clear whose turn it is without cluttering the interface.
+
+```go
+// Example of turn management in the Game struct
+type Game struct {
+    // ... other fields
+    PlayerOrder []string // Ordered list of player IDs
+    CurrentTurn int      // Index into PlayerOrder
+}
+
+// IsPlayerTurn checks if it's the specified player's turn
+func (g *Game) IsPlayerTurn(playerID string) bool {
+    currentPlayer, err := g.GetCurrentTurnPlayerID()
+    if err != nil {
+        return false
+    }
+    return playerID == currentPlayer
+}
+
+// In UI creation, use PlayerOrder for consistent display
+// Instead of: for playerID, hand := range game.Players { ... }
+// Use: for _, playerID := range game.PlayerOrder { hand := game.Players[playerID]; ... }
+```
+
 ### Discord Layer
 
 ```go

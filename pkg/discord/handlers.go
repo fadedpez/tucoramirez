@@ -135,6 +135,18 @@ func (b *Bot) handleJoinGame(s *discordgo.Session, i *discordgo.InteractionCreat
 		}
 	}
 
+	// Check if player is already in the lobby
+	if _, alreadyJoined := lobby.Players[i.Member.User.ID]; alreadyJoined {
+		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: "¡Tranquilo, amigo! *tips hat* You're already at the table. Just wait for the game to start.",
+			Flags:   discordgo.MessageFlagsEphemeral,
+		})
+		if err != nil {
+			log.Printf("Error sending followup message: %v", err)
+		}
+		return
+	}
+
 	// Add player to lobby
 	b.mu.Lock()
 	lobby.Players[i.Member.User.ID] = true
@@ -269,6 +281,18 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 	// Process the action
 	var err error
 
+	// Check if it's the player's turn for hit/stand actions
+	if (action == "hit" || action == "stand") && !game.IsPlayerTurn(i.Member.User.ID) {
+		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: "Espera tu turno, amigo! *taps cards impatiently* It's not your turn!",
+			Flags:   discordgo.MessageFlagsEphemeral,
+		})
+		if err != nil {
+			log.Printf("Error sending followup message: %v", err)
+		}
+		return
+	}
+
 	switch action {
 	case "hit":
 		err = game.Hit(i.Member.User.ID)
@@ -323,7 +347,7 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 		// Set game to complete state
 		game.State = entities.StateComplete
 		log.Printf("All players are done in channel %s, setting game to complete", i.ChannelID)
-		
+
 		// Recreate the embed with the updated game state
 		embed = createGameEmbed(game, s, i.GuildID)
 	}
@@ -439,8 +463,8 @@ func (b *Bot) handlePlayAgain(s *discordgo.Session, i *discordgo.InteractionCrea
 	// Send a new message with the lobby UI instead of updating the existing one
 	content := "¡Bienvenidos! *Tuco shuffles the cards with flair* Who's ready to play?"
 	_, err := s.ChannelMessageSendComplex(i.ChannelID, &discordgo.MessageSend{
-		Content: content,
-		Embeds: []*discordgo.MessageEmbed{embed},
+		Content:    content,
+		Embeds:     []*discordgo.MessageEmbed{embed},
 		Components: components,
 	})
 	if err != nil {

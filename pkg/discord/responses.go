@@ -30,8 +30,19 @@ func createGameEmbed(game *blackjack.Game, s *discordgo.Session, guildID string)
 	dealerField := createDealerField(game)
 	embed.Fields = append(embed.Fields, dealerField)
 
+	// Get current player's turn if game is in playing state
+	var currentPlayerID string
+	if game.State == entities.StatePlaying {
+		currentPlayer, err := game.GetCurrentTurnPlayerID()
+		if err == nil {
+			currentPlayerID = currentPlayer
+		}
+	}
+
 	// Add all players' hands
-	for playerID, hand := range game.Players {
+	// Iterate through PlayerOrder to maintain consistent display order
+	for _, playerID := range game.PlayerOrder {
+		hand := game.Players[playerID]
 		playerScore := blackjack.GetBestScore(hand.Cards)
 		playerStatus := getStatusMessage(hand.Status)
 
@@ -44,12 +55,16 @@ func createGameEmbed(game *blackjack.Game, s *discordgo.Session, guildID string)
 			playerName = member.User.Username
 		}
 
-		if hand.Status == blackjack.StatusPlaying {
-			playerName += " 🎲" // Current player indicator
+		// Add turn indicator if it's this player's turn
+		var namePrefix string
+		if game.State == entities.StatePlaying && playerID == currentPlayerID {
+			namePrefix = "👉 " // Pointing finger emoji to indicate current turn
+		} else {
+			namePrefix = "" // No emoji for other players
 		}
 
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-			Name:   fmt.Sprintf("💎 %s", playerName),
+			Name:   fmt.Sprintf("%s%s", namePrefix, playerName),
 			Value:  fmt.Sprintf("%s\nScore: %d%s", FormatCards(hand.Cards), playerScore, playerStatus),
 			Inline: true,
 		})
