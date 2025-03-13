@@ -311,18 +311,28 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 	// Update the message with new game state
 	content := "¡Vamos a jugar! *Tuco deals the cards with a flourish*"
 
+	// Check if all players are done, and if so, make sure game state is complete
+	if game.CheckAllPlayersDone() && game.State != entities.StateComplete {
+		// If not all players bust, play dealer's turn
+		if !game.CheckAllPlayersBust() {
+			// Play dealer's turn
+			if err := game.PlayDealer(); err != nil {
+				log.Printf("Error playing dealer's turn: %v", err)
+			}
+		}
+		// Set game to complete state
+		game.State = entities.StateComplete
+		log.Printf("All players are done in channel %s, setting game to complete", i.ChannelID)
+		
+		// Recreate the embed with the updated game state
+		embed = createGameEmbed(game, s, i.GuildID)
+	}
+
 	// Determine which components to show based on game state
 	var components []discordgo.MessageComponent
 
 	// Check if the game is over
 	gameOver := game.State == entities.StateComplete || game.CheckAllPlayersDone()
-
-	// If all players are done but game state isn't complete yet, we need to finalize the game
-	if game.CheckAllPlayersDone() && game.State != entities.StateComplete {
-		// Set game to complete state if it's not already
-		game.State = entities.StateComplete
-		log.Printf("All players are done in channel %s, setting game to complete", i.ChannelID)
-	}
 
 	// If the game is over, show play again button
 	if gameOver {
