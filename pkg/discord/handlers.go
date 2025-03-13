@@ -285,6 +285,10 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 			if !game.CheckAllPlayersBust() {
 				// Play dealer's turn if not all players bust
 				err = game.PlayDealer()
+			} else {
+				// All players bust, set game state to complete
+				game.State = entities.StateComplete
+				log.Printf("All players bust in channel %s, setting game to complete", i.ChannelID)
 			}
 		}
 	}
@@ -420,16 +424,25 @@ func (b *Bot) handlePlayAgain(s *discordgo.Session, i *discordgo.InteractionCrea
 	embed := createLobbyEmbed(lobby)
 	components := createLobbyButtons(lobby.OwnerID)
 
-	// Update the message with lobby UI
-	content := "\u00a1Bienvenidos! *Tuco shuffles the cards with flair* Who's ready to play?"
-	_, err := s.FollowupMessageEdit(i.Interaction, i.Message.ID, &discordgo.WebhookEdit{
-		Content:    &content,
-		Embeds:     &[]*discordgo.MessageEmbed{embed},
-		Components: &components,
+	// Send a new message with the lobby UI instead of updating the existing one
+	content := "¡Bienvenidos! *Tuco shuffles the cards with flair* Who's ready to play?"
+	_, err := s.ChannelMessageSendComplex(i.ChannelID, &discordgo.MessageSend{
+		Content: content,
+		Embeds: []*discordgo.MessageEmbed{embed},
+		Components: components,
 	})
 	if err != nil {
-		log.Printf("Error updating message with lobby UI: %v", err)
+		log.Printf("Error sending new lobby message: %v", err)
 		return
+	}
+
+	// Acknowledge the interaction to avoid the "interaction failed" message
+	content = "Starting a new game..."
+	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+		Content: &content,
+	})
+	if err != nil {
+		log.Printf("Error acknowledging interaction: %v", err)
 	}
 }
 
