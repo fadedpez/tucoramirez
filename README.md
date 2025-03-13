@@ -288,6 +288,80 @@ func (s *Service) GetRandomImage() *entities.Image {
 }
 ```
 
+### Game State Architecture
+
+The project uses a flexible architecture for handling game states and results across different game types:
+
+#### Generic Game States
+
+Defined in `entities/gamestate.go`, these are game-agnostic states and results:
+
+```go
+// Game state types
+type GameState string
+
+const (
+    StateWaiting  GameState = "WAITING"
+    StateDealing  GameState = "DEALING"
+    StatePlaying  GameState = "PLAYING"
+    StateDealer   GameState = "DEALER"
+    StateComplete GameState = "COMPLETE"
+)
+
+// Base result types
+type Result string
+
+const (
+    ResultWin  Result = "WIN"
+    ResultLose Result = "LOSE"
+    ResultPush Result = "PUSH"
+)
+```
+
+#### GameDetails Interface
+
+This interface allows for game-specific details while maintaining a consistent framework:
+
+```go
+// GameDetails defines what game-specific result details must provide
+type GameDetails interface {
+    // GameType returns the type of game (ex blackjack or poker)
+    GameType() GameState
+    // ValidateDetails ensures the details are valid for the game
+    ValidateDetails() error
+}
+```
+
+#### Game-Specific Implementations
+
+Each game implements its own version of GameDetails:
+
+```go
+// BlackjackDetails contains game-specific result details
+type BlackjackDetails struct {
+    DealerScore int
+    IsBlackjack bool
+    IsBust      bool
+}
+
+func (d *BlackjackDetails) GameType() entities.GameState {
+    return entities.StateDealing // will be updated to a game type constant
+}
+
+func (d *BlackjackDetails) ValidateDetails() error {
+    if d.DealerScore < 0 || d.DealerScore > 31 {
+        return errors.New("invalid dealer score")
+    }
+    return nil
+}
+```
+
+This architecture allows us to:
+1. Handle multiple card games with a consistent state framework
+2. Capture game-specific details and rules
+3. Process results uniformly at the repository level
+4. Add new games without modifying core game state logic
+
 ### Discord Layer
 
 ```go
