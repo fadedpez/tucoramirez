@@ -314,9 +314,17 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 	// Determine which components to show based on game state
 	var components []discordgo.MessageComponent
 
-	// Check if all players are done to determine if the game is over
-	gameOver := game.CheckAllPlayersDone()
+	// Check if the game is over
+	gameOver := game.State == entities.StateComplete || game.CheckAllPlayersDone()
 
+	// If all players are done but game state isn't complete yet, we need to finalize the game
+	if game.CheckAllPlayersDone() && game.State != entities.StateComplete {
+		// Set game to complete state if it's not already
+		game.State = entities.StateComplete
+		log.Printf("All players are done in channel %s, setting game to complete", i.ChannelID)
+	}
+
+	// If the game is over, show play again button
 	if gameOver {
 		// Game is over, show play again button
 		components = []discordgo.MessageComponent{
@@ -366,12 +374,6 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 
 	// If the game is over, clean up
 	if gameOver {
-		// If the game state is still playing but all players are done, update to complete
-		if game.State == entities.StatePlaying || game.State == entities.StateDealer {
-			game.State = entities.StateComplete
-			log.Printf("Game in channel %s is complete, updating state", i.ChannelID)
-		}
-
 		// Send a game completion image if available
 		if b.imageService != nil {
 			image := b.imageService.GetRandomImage()
