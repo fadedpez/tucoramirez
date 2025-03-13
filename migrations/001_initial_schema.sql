@@ -3,9 +3,10 @@
 
 -- Create decks table
 CREATE TABLE IF NOT EXISTS decks (
-    id TEXT PRIMARY KEY,
+    channel_id TEXT PRIMARY KEY,
     cards TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create game_results table
