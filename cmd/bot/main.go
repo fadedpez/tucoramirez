@@ -33,16 +33,22 @@ func main() {
 	if storageType == "sqlite" {
 		// Ensure data directory exists
 		dataDir := "./data"
+		log.Printf("Creating data directory at %s if it doesn't exist", dataDir)
 		if err := os.MkdirAll(dataDir, 0755); err != nil {
 			log.Fatalf("Failed to create data directory: %v", err)
 		}
 		
-		sqliteRepo, err := game.NewSQLiteRepository(dataDir + "/tucoramirez.db")
+		dbPath := dataDir + "/tucoramirez.db"
+		log.Printf("Initializing SQLite repository at %s", dbPath)
+		sqliteRepo, err := game.NewSQLiteRepository(dbPath)
 		if err != nil {
-			log.Fatalf("Failed to initialize SQLite repository: %v", err)
+			log.Printf("Failed to initialize SQLite repository: %v", err)
+			log.Println("Falling back to in-memory repository")
+			gameRepo = game.NewMemoryRepository()
+		} else {
+			gameRepo = sqliteRepo
+			log.Println("Successfully initialized SQLite repository for game data")
 		}
-		gameRepo = sqliteRepo
-		log.Println("Using SQLite repository for game data")
 	} else {
 		// Default to memory repository
 		gameRepo = game.NewMemoryRepository()

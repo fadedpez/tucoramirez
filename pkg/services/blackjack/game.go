@@ -76,21 +76,27 @@ func (g *Game) Start() error {
 	}
 
 	// Try to load existing deck from repository
+	log.Printf("Attempting to load deck for channel %s", g.ChannelID)
 	deck, err := g.repo.GetDeck(context.Background(), g.ChannelID)
 	if err != nil {
+		log.Printf("Error loading deck: %v", err)
 		return fmt.Errorf("failed to load deck: %v", err)
 	}
 
 	// Create a new deck if none exists
 	if deck == nil {
+		log.Printf("No existing deck found, creating new deck for channel %s", g.ChannelID)
 		g.Deck = entities.NewDeck()
 		g.Deck.Shuffle()
 
 		// Save the new deck to the repository
+		log.Printf("Saving new deck to repository for channel %s", g.ChannelID)
 		if err := g.repo.SaveDeck(context.Background(), g.ChannelID, g.Deck.Cards); err != nil {
+			log.Printf("Error saving deck: %v", err)
 			return fmt.Errorf("failed to save deck: %v", err)
 		}
 	} else {
+		log.Printf("Using existing deck with %d cards for channel %s", len(deck), g.ChannelID)
 		g.Deck = &entities.Deck{Cards: deck}
 	}
 
