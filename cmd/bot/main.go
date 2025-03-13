@@ -8,13 +8,14 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/fadedpez/tucoramirez/pkg/discord"
+	"github.com/fadedpez/tucoramirez/pkg/repositories/game"
 )
 
 func main() {
 	// Load environment variables from .env file
 	err := godotenv.Load(".env")
 	if err != nil {
-		log.Fatal("¡Ay caramba! *frantically searches pockets* Where is my .env file, eh? Make sure it exists at the project root! 🎲")
+		log.Fatal("¡Ay caramba! *frantically searches pockets* Where is my .env file, eh? Make sure it exists at the project root! ")
 	}
 
 	// Get Discord token from environment
@@ -23,8 +24,33 @@ func main() {
 		log.Fatal("DISCORD_TOKEN not set in environment")
 	}
 
-	// Create new bot instance
-	bot, err := discord.NewBot(token)
+	// Initialize repository
+	var gameRepo game.Repository
+	
+	// You can use an environment variable to choose the repository type
+	storageType := os.Getenv("STORAGE_TYPE") // Add this to your .env file
+	
+	if storageType == "sqlite" {
+		// Ensure data directory exists
+		dataDir := "./data"
+		if err := os.MkdirAll(dataDir, 0755); err != nil {
+			log.Fatalf("Failed to create data directory: %v", err)
+		}
+		
+		sqliteRepo, err := game.NewSQLiteRepository(dataDir + "/tucoramirez.db")
+		if err != nil {
+			log.Fatalf("Failed to initialize SQLite repository: %v", err)
+		}
+		gameRepo = sqliteRepo
+		log.Println("Using SQLite repository for game data")
+	} else {
+		// Default to memory repository
+		gameRepo = game.NewMemoryRepository()
+		log.Println("Using in-memory repository for game data (data will be lost on restart)")
+	}
+
+	// Create new bot instance with repository
+	bot, err := discord.NewBot(token, gameRepo)
 	if err != nil {
 		log.Fatalf("Error creating bot: %v", err)
 	}

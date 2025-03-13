@@ -58,6 +58,16 @@ func createGameEmbed(game *blackjack.Game, s *discordgo.Session, guildID string)
 	// Add game result message if game is complete
 	if game.State == entities.StateComplete {
 		embed.Description = getGameResultsDescription(game, s, guildID)
+
+		// Add random image from image service if available
+		// if bot != nil && bot.imageService != nil {
+		// 	image := bot.imageService.GetRandomImage()
+		// 	if image != nil && image.URL != "" {
+		// 		embed.Image = &discordgo.MessageEmbedImage{
+		// 			URL: image.URL,
+		// 		}
+		// 	}
+		// }
 	}
 
 	return embed

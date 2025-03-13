@@ -98,3 +98,8 @@ func (r *MemoryRepository) GetChannelResults(ctx context.Context, channelID stri
 	}
 	return results, nil
 }
+
+// Close is a no-op for memory repository since there are no resources to close
+func (r *MemoryRepository) Close() error {
+	return nil
+}

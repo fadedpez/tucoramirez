@@ -2,11 +2,14 @@ package discord
 
 import (
 	"fmt"
+	"log"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/fadedpez/tucoramirez/pkg/repositories/game"
 	"github.com/fadedpez/tucoramirez/pkg/services/blackjack"
+	"github.com/fadedpez/tucoramirez/pkg/services/image"
 )
 
 type GameLobby struct {
@@ -26,21 +29,38 @@ type Bot struct {
 
 	// Storage repository
 	repo game.Repository
+
+	// Image service for game completion images
+	imageService *image.Service
+
+	// Interaction tracking to prevent duplicates
+	interactionMu        sync.RWMutex
+	processedInteractions map[string]bool
+	lastCleanupTime      time.Time
 }
 
 // NewBot creates a new instance of the bot
-func NewBot(token string) (*Bot, error) {
+func NewBot(token string, repository game.Repository) (*Bot, error) {
 	session, err := discordgo.New("Bot " + token)
 	if err != nil {
 		return nil, fmt.Errorf("error creating Discord session: %w", err)
 	}
 
+	// Initialize image service
+	imageService, err := image.NewService("images.txt")
+	if err != nil {
+		return nil, fmt.Errorf("error initializing image service: %w", err)
+	}
+
 	bot := &Bot{
-		session: session,
-		token:   token,
-		games:   make(map[string]*blackjack.Game),
-		lobbies: make(map[string]*GameLobby),
-		repo:    game.NewMemoryRepository(),  // Initialize the repository
+		session:      session,
+		token:        token,
+		games:        make(map[string]*blackjack.Game),
+		lobbies:      make(map[string]*GameLobby),
+		repo:         repository,
+		imageService: imageService,
+		processedInteractions: make(map[string]bool),
+		lastCleanupTime: time.Now(),
 	}
 
 	// Register handlers
@@ -57,6 +77,7 @@ func NewBot(token string) (*Bot, error) {
 func (b *Bot) Start() error {
 	// Clean up any stale state
 	b.mu.Lock()
+	log.Printf("Cleaning up stale state: %d games, %d lobbies", len(b.games), len(b.lobbies))
 	b.games = make(map[string]*blackjack.Game)
 	b.lobbies = make(map[string]*GameLobby)
 	b.mu.Unlock()
@@ -86,6 +107,11 @@ func (b *Bot) Stop() error {
 	b.games = make(map[string]*blackjack.Game)
 	b.lobbies = make(map[string]*GameLobby)
 	b.mu.Unlock()
+
+	// Close repository
+	if err := b.repo.Close(); err != nil {
+		return fmt.Errorf("error closing repository: %w", err)
+	}
 
 	// Close websocket connection
 	if err := b.session.Close(); err != nil {

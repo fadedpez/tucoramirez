@@ -16,4 +16,7 @@ type Repository interface {
 	SaveGameResult(ctx context.Context, result *entities.GameResult) error
 	GetPlayerResults(ctx context.Context, playerID string) ([]*entities.GameResult, error)
 	GetChannelResults(ctx context.Context, channelID string, limit int) ([]*entities.GameResult, error)
+
+	// Close closes any resources used by the repository
+	Close() error
 }
