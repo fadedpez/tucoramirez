@@ -7,6 +7,8 @@ import (
 )
 
 // Repository defines the interface for wallet data operations
+//
+//go:generate mockgen -source=$GOFILE -destination=mock/mock.go -package=mock_wallet
 type Repository interface {
 	// GetWallet retrieves a wallet by user ID
 	GetWallet(ctx context.Context, userID string) (*entities.Wallet, error)

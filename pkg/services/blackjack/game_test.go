@@ -5,405 +5,884 @@ import (
 	"testing"
 
 	"github.com/fadedpez/tucoramirez/pkg/entities"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
+	mock_game "github.com/fadedpez/tucoramirez/pkg/repositories/game/mock"
+	mock_wallet "github.com/fadedpez/tucoramirez/pkg/repositories/wallet/mock"
+	mock_wallet_service "github.com/fadedpez/tucoramirez/pkg/services/wallet/mock"
+	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 )
 
-// Mock repository for testing
-type mockRepository struct {
-	GetResultsFunc func() ([]HandResult, error)
+// GameTestSuite is a test suite for the Game service
+type GameTestSuite struct {
+	suite.Suite
+	ctrl           *gomock.Controller
+	mockGameRepo   *mock_game.MockRepository
+	mockWalletRepo *mock_wallet.MockRepository
+	game           *Game
+	channelID      string
+	testDeck       *entities.Deck
 }
 
-func (m *mockRepository) SaveDeck(ctx context.Context, channelID string, deck []*entities.Card) error {
-	return nil
+// SetupTest sets up the test suite
+func (s *GameTestSuite) SetupTest() {
+	s.ctrl = gomock.NewController(s.T())
+	s.mockGameRepo = mock_game.NewMockRepository(s.ctrl)
+	s.mockWalletRepo = mock_wallet.NewMockRepository(s.ctrl)
+
+	s.channelID = "test-channel"
+	s.game = NewGame(s.channelID, s.mockGameRepo)
+
+	s.testDeck = NewBlackjackDeck()
+	s.testDeck.Shuffle()
 }
 
-func (m *mockRepository) GetDeck(ctx context.Context, channelID string) ([]*entities.Card, error) {
-	return nil, nil
+// TearDownTest tears down the test suite
+func (s *GameTestSuite) TearDownTest() {
+	s.ctrl.Finish()
 }
 
-func (m *mockRepository) SaveGameResult(ctx context.Context, result *entities.GameResult) error {
-	return nil
+// TestGameSuite runs the test suite
+func TestGameSuite(t *testing.T) {
+	suite.Run(t, new(GameTestSuite))
 }
 
-func (m *mockRepository) GetPlayerResults(ctx context.Context, playerID string) ([]*entities.GameResult, error) {
-	return nil, nil
+// TestAddPlayer tests adding a player to the game
+func (s *GameTestSuite) TestAddPlayer_GameInProgress() {
+	// Add a player
+	s.game.State = entities.StateBetting
+
+	err := s.game.AddPlayer("player1")
+	s.EqualError(err, ErrGameInProgress.Error())
 }
 
-func (m *mockRepository) GetChannelResults(ctx context.Context, channelID string, limit int) ([]*entities.GameResult, error) {
-	return nil, nil
+// TestAddPlayer tests adding a player to the game
+func (s *GameTestSuite) TestAddPlayer() {
+	// Add a player
+	err := s.game.AddPlayer("player1")
+	s.NoError(err)
+	s.Contains(s.game.Players, "player1")
+
+	s.Equal(1, len(s.game.Players))
 }
 
-func (m *mockRepository) Close() error {
-	return nil
+func (s *GameTestSuite) TestStartGame_NoPlayers() {
+	s.game.State = entities.StateBetting
+
+	err := s.game.Start()
+	s.EqualError(err, "no players in game")
 }
 
-func (m *mockRepository) GetResults() ([]HandResult, error) {
-	if m.GetResultsFunc != nil {
-		return m.GetResultsFunc()
-	}
-	return nil, nil
+func (s *GameTestSuite) TestStartGame_GameInProgress() {
+	s.game.State = entities.StateDealing
+
+	err := s.game.Start()
+	s.EqualError(err, ErrGameInProgress.Error())
 }
 
-func TestBlackjackPayout(t *testing.T) {
-	// Test the blackjack payout ratio directly
-	betAmount := int64(100)
+func (s *GameTestSuite) TestStartGame_TransitionsToBetting() {
+	// Add players
+	_ = s.game.AddPlayer("player1")
+	_ = s.game.AddPlayer("player2")
 
-	// Calculate expected payout for blackjack (3:2 ratio)
-	expectedPayout := betAmount + (betAmount * 3 / 2) // Original bet + 3/2 of the bet
+	s.game.State = entities.StateWaiting
 
-	// Verify the calculation
-	if expectedPayout != int64(250) {
-		t.Errorf("Blackjack payout calculation is incorrect. Expected: %d, Got: %d", int64(250), expectedPayout)
-	}
-
-	// Test with different bet amounts to verify the 3:2 ratio
-	testCases := []struct {
-		betAmount      int64
-		expectedPayout int64
-	}{
-		{100, 250},   // $100 bet should pay $250 ($100 original bet + $150 winnings)
-		{200, 500},   // $200 bet should pay $500 ($200 original bet + $300 winnings)
-		{50, 125},    // $50 bet should pay $125 ($50 original bet + $75 winnings)
-		{10, 25},     // $10 bet should pay $25 ($10 original bet + $15 winnings)
-		{20, 50},     // $20 bet should pay $50 ($20 original bet + $30 winnings)
-		{1000, 2500}, // $1000 bet should pay $2500 ($1000 original bet + $1500 winnings)
-	}
-
-	for _, tc := range testCases {
-		calculatedPayout := tc.betAmount + (tc.betAmount * 3 / 2)
-		if calculatedPayout != tc.expectedPayout {
-			t.Errorf("Blackjack payout calculation for bet $%d is incorrect. Expected: $%d, Got: $%d",
-				tc.betAmount, tc.expectedPayout, calculatedPayout)
-		}
-	}
+	err := s.game.Start()
+	s.NoError(err)
+	s.Equal(entities.StateBetting, s.game.State)
 }
 
-func TestPushPayout(t *testing.T) {
-	// Test the push payout logic directly
-	betAmount := int64(100)
+func (s *GameTestSuite) TestStartGame_ChecksAllBetsPlaced() {
+	// Add players
+	_ = s.game.AddPlayer("player1")
+	_ = s.game.AddPlayer("player2")
 
-	// Calculate expected payout for push (original bet returned)
-	expectedPayout := betAmount // For push, player gets their original bet back
+	s.game.State = entities.StateBetting
 
-	// Verify the calculation
-	if expectedPayout != int64(100) {
-		t.Errorf("Push payout calculation is incorrect. Expected: %d, Got: %d", int64(100), expectedPayout)
-	}
+	err := s.game.Start()
+	s.EqualError(err, "not all players have placed bets")
 
-	// Test with different bet amounts to verify push returns original bet
-	testCases := []struct {
-		betAmount      int64
-		expectedPayout int64
-	}{
-		{100, 100},   // $100 bet should return $100
-		{200, 200},   // $200 bet should return $200
-		{50, 50},     // $50 bet should return $50
-		{10, 10},     // $10 bet should return $10
-		{20, 20},     // $20 bet should return $20
-		{1000, 1000}, // $1000 bet should return $1000
-	}
+	s.game.Bets["player1"] = 100
 
-	for _, tc := range testCases {
-		// For push, payout is simply the original bet
-		calculatedPayout := tc.betAmount
-		if calculatedPayout != tc.expectedPayout {
-			t.Errorf("Push payout calculation for bet $%d is incorrect. Expected: $%d, Got: $%d",
-				tc.betAmount, tc.expectedPayout, calculatedPayout)
-		}
-	}
-
-	// Test the specific switch case in ProcessPayouts for push results
-	// This directly tests the logic in the switch case without calling GetResults
-	playerID := "player1"
-	bets := map[string]int64{playerID: 100}
-	payouts := make(map[string]int64)
-	
-	// Simulate the push result case in ProcessPayouts
-	result := ResultPush
-	bet := bets[playerID]
-	
-	switch result {
-	case ResultWin:
-		payouts[playerID] = bet * 2
-	case ResultBlackjack:
-		payouts[playerID] = bet + (bet * 3 / 2)
-	case ResultPush:
-		// Push returns the original bet
-		payouts[playerID] = bet
-	case ResultLose:
-		payouts[playerID] = 0
-	}
-	
-	// Verify the payout for push
-	if payouts[playerID] != 100 {
-		t.Errorf("ProcessPayouts switch case for push is incorrect. Expected: %d, Got: %d", 100, payouts[playerID])
-	}
+	err = s.game.Start()
+	s.EqualError(err, "not all players have placed bets")
 }
 
-func TestMultiPlayerPayouts(t *testing.T) {
-	// Test cases for different game results
-	testCases := []struct {
-		name           string
-		result         Result
-		betAmount      int64
-		expectedPayout int64
-	}{
-		{"Regular Win", ResultWin, 100, 200},             // Regular win: bet * 2
-		{"Blackjack", ResultBlackjack, 200, 500},         // Blackjack: bet + (bet * 3 / 2)
-		{"Push", ResultPush, 150, 150},                   // Push: original bet returned
-		{"Loss", ResultLose, 300, 0},                     // Loss: no payout
-	}
+// TestStartGame tests starting a game
+func (s *GameTestSuite) TestStartGame() {
+	// Add players
+	_ = s.game.AddPlayer("player1")
+	_ = s.game.AddPlayer("player2")
 
-	// Test each case by directly simulating the switch case in ProcessPayouts
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			// Set up test data
-			playerID := "player1"
-			bets := map[string]int64{playerID: tc.betAmount}
-			payouts := make(map[string]int64)
-			
-			// Simulate the result case in ProcessPayouts
-			bet := bets[playerID]
-			
-			switch tc.result {
-			case ResultWin:
-				payouts[playerID] = bet * 2
-			case ResultBlackjack:
-				payouts[playerID] = bet + (bet * 3 / 2)
-			case ResultPush:
-				// Push returns the original bet
-				payouts[playerID] = bet
-			case ResultLose:
-				payouts[playerID] = 0
-			}
-			
-			// Verify the payout matches expected amount
-			if payouts[playerID] != tc.expectedPayout {
-				t.Errorf("ProcessPayouts for %s is incorrect. Expected: $%d, Got: $%d", 
-					tc.name, tc.expectedPayout, payouts[playerID])
-			}
-		})
-	}
+	s.Equal(2, len(s.game.Players))
+	s.Equal(s.game.State, entities.StateWaiting)
 
-	// Test multiple players in a single game
-	playerIDs := []string{"player1", "player2", "player3", "player4"}
-	bets := map[string]int64{
-		"player1": 100, // Regular win
-		"player2": 200, // Blackjack
-		"player3": 150, // Push
-		"player4": 300, // Loss
-	}
-	results := map[string]Result{
-		"player1": ResultWin,
-		"player2": ResultBlackjack,
-		"player3": ResultPush,
-		"player4": ResultLose,
-	}
-	expectedPayouts := map[string]int64{
-		"player1": 200,   // Regular win: bet * 2
-		"player2": 500,   // Blackjack: bet + (bet * 3 / 2)
-		"player3": 150,   // Push: original bet returned
-		"player4": 0,     // Loss: no payout
-	}
+	// Mock the repository calls for Start
+	s.mockGameRepo.EXPECT().
+		GetDeck(gomock.Any(), "test-channel").
+		Return(s.testDeck.Cards, nil)
 
-	// Calculate payouts for all players
-	payouts := make(map[string]int64)
-	for _, playerID := range playerIDs {
-		bet := bets[playerID]
-		result := results[playerID]
-		
-		switch result {
-		case ResultWin:
-			payouts[playerID] = bet * 2
-		case ResultBlackjack:
-			payouts[playerID] = bet + (bet * 3 / 2)
-		case ResultPush:
-			payouts[playerID] = bet
-		case ResultLose:
-			payouts[playerID] = 0
-		}
-	}
+	_ = s.game.Start()
 
-	// Verify that all players received the correct payouts
-	for playerID, expectedAmount := range expectedPayouts {
-		actualAmount, exists := payouts[playerID]
-		if !exists {
-			t.Errorf("Player %s did not receive a payout", playerID)
-			continue
-		}
+	cardLength := len(s.testDeck.Cards)
 
-		if actualAmount != expectedAmount {
-			t.Errorf("Incorrect payout for player %s. Expected: $%d, Got: $%d", 
-				playerID, expectedAmount, actualAmount)
-		}
-	}
+	s.Equal(entities.StateBetting, s.game.State)
+	_ = s.game.PlaceBet("player1", 100)
 
-	// Verify that all players who placed bets have a payout result
-	for playerID := range bets {
-		_, exists := payouts[playerID]
-		if !exists {
-			t.Errorf("Player %s placed a bet but did not receive a payout result", playerID)
-		}
-	}
+	// we are ready to start the game after this which will save the dec
+	s.mockGameRepo.EXPECT().
+		SaveDeck(gomock.Any(), "test-channel", gomock.Any()).
+		Return(nil)
 
-	// Verify that there are no extra players in the payouts
-	if len(payouts) != len(bets) {
-		t.Errorf("Number of payouts (%d) does not match number of bets (%d)", 
-			len(payouts), len(bets))
-	}
+	_ = s.game.PlaceBet("player2", 200)
+
+	_ = s.game.Start()
+
+	s.Equal(entities.StatePlaying, s.game.State)
+	s.Equal(cardLength-6, len(s.game.Deck.Cards))
 }
 
-// MockWalletService is a mock implementation of the wallet service for testing
-type MockWalletService struct {
-	mock.Mock
-}
+// TestGetResults tests getting game results
+func (s *GameTestSuite) TestGetResults() {
+	// Setup game with controlled cards for predictable results
+	_ = s.game.AddPlayer("player1")
 
-func (m *MockWalletService) GetOrCreateWallet(ctx context.Context, userID string) (*entities.Wallet, bool, error) {
-	args := m.Called(ctx, userID)
-	return args.Get(0).(*entities.Wallet), args.Bool(1), args.Error(2)
-}
-
-func (m *MockWalletService) AddFunds(ctx context.Context, userID string, amount int64, description string) error {
-	args := m.Called(ctx, userID, amount, description)
-	return args.Error(0)
-}
-
-// MockRepository is a mock implementation of the Repository interface
-type MockRepository struct {
-	mock.Mock
-}
-
-// SaveGameResult mocks the SaveGameResult method
-func (m *MockRepository) SaveGameResult(ctx context.Context, result *entities.GameResult) error {
-	args := m.Called(ctx, result)
-	return args.Error(0)
-}
-
-// SaveDeck mocks the SaveDeck method
-func (m *MockRepository) SaveDeck(ctx context.Context, channelID string, deck []*entities.Card) error {
-	args := m.Called(ctx, channelID, deck)
-	return args.Error(0)
-}
-
-// GetDeck mocks the GetDeck method
-func (m *MockRepository) GetDeck(ctx context.Context, channelID string) ([]*entities.Card, error) {
-	args := m.Called(ctx, channelID)
-	return args.Get(0).([]*entities.Card), args.Error(1)
-}
-
-// GetChannelResults mocks the GetChannelResults method
-func (m *MockRepository) GetChannelResults(ctx context.Context, channelID string, limit int) ([]*entities.GameResult, error) {
-	args := m.Called(ctx, channelID, limit)
-	return args.Get(0).([]*entities.GameResult), args.Error(1)
-}
-
-// GetPlayerResults mocks the GetPlayerResults method
-func (m *MockRepository) GetPlayerResults(ctx context.Context, playerID string) ([]*entities.GameResult, error) {
-	args := m.Called(ctx, playerID)
-	return args.Get(0).([]*entities.GameResult), args.Error(1)
-}
-
-// Close mocks the Close method
-func (m *MockRepository) Close() error {
-	args := m.Called()
-	return args.Error(0)
-}
-
-// TestProcessPayoutsWithWalletUpdates tests the ProcessPayoutsWithWalletUpdates function
-func TestProcessPayoutsWithWalletUpdates(t *testing.T) {
-	// Create a mock repository
-	mockRepo := new(MockRepository)
-	// Only set up expectations for the methods that are actually called
-	mockRepo.On("SaveGameResult", mock.Anything, mock.Anything).Return(nil)
-	mockRepo.On("SaveDeck", mock.Anything, mock.Anything, mock.Anything).Return(nil)
-
-	// Create a game with players and bets
-	game := &Game{
-		State:       entities.StateComplete,
-		PlayerOrder: []string{"player1", "player2", "player3"},
-		Bets: map[string]int64{
-			"player1": 100,
-			"player2": 200,
-			"player3": 150,
-		},
-		PayoutsProcessed: false,
-		// Set up a simple game state where player1 wins, player2 loses, and player3 pushes
-		Players: map[string]*Hand{
-			"player1": {
-				Cards: []*entities.Card{
-					{Rank: "10", Suit: "Hearts"},
-					{Rank: "J", Suit: "Spades"},
-				},
-			},
-			"player2": {
-				Cards: []*entities.Card{
-					{Rank: "10", Suit: "Diamonds"},
-					{Rank: "6", Suit: "Clubs"},
-				},
-			},
-			"player3": {
-				Cards: []*entities.Card{
-					{Rank: "10", Suit: "Clubs"},
-					{Rank: "8", Suit: "Hearts"},
-				},
-			},
-		},
-		Dealer: &Hand{
-			Cards: []*entities.Card{
-				{Rank: "10", Suit: "Spades"},
-				{Rank: "8", Suit: "Diamonds"},
-			},
-		},
-		repo: mockRepo,
-		ChannelID: "test-channel",
-		Deck: &entities.Deck{
-			Cards: []*entities.Card{},
+	// Create a specific deck for testing
+	s.game.Deck = &entities.Deck{
+		Cards: []*entities.Card{
+			{Rank: entities.Ten, Suit: entities.Hearts},     // Player card 1
+			{Rank: entities.Ten, Suit: entities.Clubs},      // Dealer card 1
+			{Rank: entities.Seven, Suit: entities.Spades},   // Player card 2
+			{Rank: entities.Seven, Suit: entities.Diamonds}, // Dealer card 2
 		},
 	}
 
-	// Create a mock wallet service that records the calls made to it
-	mockWalletService := new(MockWalletService)
+	// Deal cards manually to ensure predictable hands
+	s.game.Players["player1"] = NewHand()
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[0]) // 10
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[2]) // 7
 
-	// Create wallets for each player
-	wallets := map[string]*entities.Wallet{
-		"player1": {UserID: "player1", Balance: 500},
-		"player2": {UserID: "player2", Balance: 500},
-		"player3": {UserID: "player3", Balance: 500},
+	s.game.Dealer = NewHand()
+	s.game.Dealer.AddCard(s.game.Deck.Cards[1]) // 10
+	s.game.Dealer.AddCard(s.game.Deck.Cards[3]) // 7
+
+	s.game.State = entities.StatePlaying
+	s.game.PlayerOrder = []string{"player1"}
+
+	// Make all players stand
+	s.game.Players["player1"].Status = StatusStand
+	s.game.Dealer.Status = StatusStand
+	s.game.State = entities.StateComplete
+
+	// Mock the SaveGameResult and SaveDeck calls for GetResults
+	s.mockGameRepo.EXPECT().
+		SaveGameResult(gomock.Any(), gomock.Any()).
+		Return(nil)
+
+	s.mockGameRepo.EXPECT().
+		SaveDeck(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil)
+
+	// Get results
+	results, err := s.game.GetResults()
+	s.NoError(err)
+	s.Equal(1, len(results))
+
+	// Player should push with dealer (both have 17)
+	s.Equal("player1", results[0].PlayerID)
+	s.Equal(ResultPush, results[0].Result)
+	s.Equal(17, results[0].Score)
+}
+
+// TestPayoutCalculation tests the payout calculation for different scenarios
+func (s *GameTestSuite) TestPayoutCalculation() {
+	// Setup game with controlled cards for predictable results
+	_ = s.game.AddPlayer("player1")
+
+	// Create a specific deck for testing - setup for a 21 (not blackjack)
+	s.game.Deck = &entities.Deck{
+		Cards: []*entities.Card{
+			{Rank: entities.Five, Suit: entities.Hearts},   // Player card 1
+			{Rank: entities.Ten, Suit: entities.Clubs},     // Dealer card 1
+			{Rank: entities.Six, Suit: entities.Spades},    // Player card 2
+			{Rank: entities.Five, Suit: entities.Diamonds}, // Dealer card 2
+			{Rank: entities.Ten, Suit: entities.Hearts},    // Player hit card (21 total)
+		},
 	}
 
-	// Based on the test output, we need to adjust our expectations for GetOrCreateWallet
-	// The first call is made for each player during the initial wallet check
-	mockWalletService.On("GetOrCreateWallet", mock.Anything, "player1").Return(wallets["player1"], false, nil).Once()
-	mockWalletService.On("GetOrCreateWallet", mock.Anything, "player2").Return(wallets["player2"], false, nil).Once()
-	mockWalletService.On("GetOrCreateWallet", mock.Anything, "player3").Return(wallets["player3"], false, nil).Once()
+	// Deal cards manually to ensure predictable hands
+	s.game.Players["player1"] = NewHand()
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[0]) // 5
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[2]) // 6
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[4]) // 10 (21 total, not blackjack)
 
-	// The second call is only made for players who receive a payout (player1 and player3)
-	mockWalletService.On("GetOrCreateWallet", mock.Anything, "player1").Return(wallets["player1"], false, nil).Once()
-	mockWalletService.On("GetOrCreateWallet", mock.Anything, "player3").Return(wallets["player3"], false, nil).Once()
+	s.game.Dealer = NewHand()
+	s.game.Dealer.AddCard(s.game.Deck.Cards[1]) // 10
+	s.game.Dealer.AddCard(s.game.Deck.Cards[3]) // 5 (15 total)
 
-	// Set up mock expectations for AddFunds
-	// Player 1 should get 2x their bet (win)
-	mockWalletService.On("AddFunds", mock.Anything, "player1", int64(200), mock.Anything).Return(nil)
-	// Player 3 should get their bet back (push)
-	mockWalletService.On("AddFunds", mock.Anything, "player3", int64(150), mock.Anything).Return(nil)
-	// Player 2 gets nothing (lose) - so no AddFunds call expected
+	s.game.State = entities.StatePlaying
+	s.game.PlayerOrder = []string{"player1"}
+	s.game.Bets["player1"] = 100
 
-	// Call the function being tested
-	ctx := context.Background()
-	err := game.ProcessPayoutsWithWalletUpdates(ctx, mockWalletService)
+	// Make all players stand
+	s.game.Players["player1"].Status = StatusStand
+	s.game.Dealer.Status = StatusStand
+	s.game.State = entities.StateComplete
 
-	// Verify no errors occurred
-	assert.NoError(t, err)
+	// Capture the game result being saved
+	var capturedGameResults []*entities.GameResult
+	// ProcessPayouts calls GetResults which calls SaveGameResult again
+	// so we need to expect at least two calls
+	s.mockGameRepo.EXPECT().
+		SaveGameResult(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, result *entities.GameResult) error {
+			capturedGameResults = append(capturedGameResults, result)
+			return nil
+		}).
+		MinTimes(1)
 
-	// Verify that payouts were processed
-	assert.True(t, game.PayoutsProcessed, "Payouts should be marked as processed")
+	// SaveDeck is also called multiple times
+	s.mockGameRepo.EXPECT().
+		SaveDeck(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil).
+		MinTimes(1)
 
-	// Test that payouts are not processed twice
-	err = game.ProcessPayoutsWithWalletUpdates(ctx, mockWalletService)
-	assert.NoError(t, err)
+	// Get results
+	results, err := s.game.GetResults()
+	s.NoError(err)
+	s.Equal(1, len(results))
+	s.Equal("player1", results[0].PlayerID)
+	s.Equal(ResultWin, results[0].Result)
+	s.Equal(21, results[0].Score)
 
-	// Verify all mock expectations were met
-	mockWalletService.AssertExpectations(t)
-	mockRepo.AssertExpectations(t)
+	// Create a mock wallet service to verify wallet updates
+	mockWalletCtrl := gomock.NewController(s.T())
+	defer mockWalletCtrl.Finish()
+	mockWalletService := mock_wallet_service.NewMockWalletService(mockWalletCtrl)
+
+	// For regular win, player gets 1:1 payout (bet + equal amount = 200 for a 100 bet)
+	mockWalletService.EXPECT().
+		GetOrCreateWallet(gomock.Any(), "player1").
+		Return(&entities.Wallet{UserID: "player1", Balance: 1000}, false, nil).
+		Times(2) // Called before and after adding funds
+
+	// Expect AddFunds to be called with the regular win payout amount
+	mockWalletService.EXPECT().
+		AddFunds(gomock.Any(), "player1", int64(200), gomock.Any()).
+		Return(nil).
+		Times(1)
+
+	// Process payouts with wallet updates
+	err = s.game.ProcessPayoutsWithWalletUpdates(context.Background(), mockWalletService)
+	s.NoError(err)
+
+	// Verify at least one game result was saved
+	s.NotEmpty(capturedGameResults, "At least one game result should have been saved")
+
+	// Verify all saved game results have the correct data
+	for _, capturedResult := range capturedGameResults {
+		s.Equal(s.game.ChannelID, capturedResult.ChannelID)
+		s.Equal(entities.StateDealing, capturedResult.GameType)
+		s.Equal(1, len(capturedResult.PlayerResults))
+
+		// Verify player result details
+		playerResult := capturedResult.PlayerResults[0]
+		s.Equal("player1", playerResult.PlayerID)
+		s.Equal(entities.Result(ResultWin), playerResult.Result)
+		s.Equal(21, playerResult.Score)
+
+		// Verify dealer details
+		blackjackDetails, ok := capturedResult.Details.(*BlackjackDetails)
+		s.True(ok, "Details should be of type BlackjackDetails")
+		s.Equal(15, blackjackDetails.DealerScore)
+		s.False(blackjackDetails.IsBlackjack)
+		s.False(blackjackDetails.IsBust)
+	}
+}
+
+// TestPayoutCalculation_DealerWins tests the payout calculation when dealer wins
+func (s *GameTestSuite) TestPayoutCalculation_DealerWins() {
+	// Setup game with controlled cards for predictable results
+	_ = s.game.AddPlayer("player1")
+
+	// Create a specific deck for testing - setup for dealer winning
+	s.game.Deck = &entities.Deck{
+		Cards: []*entities.Card{
+			{Rank: entities.Five, Suit: entities.Hearts},   // Player card 1
+			{Rank: entities.Ten, Suit: entities.Clubs},     // Dealer card 1
+			{Rank: entities.Six, Suit: entities.Spades},    // Player card 2
+			{Rank: entities.Nine, Suit: entities.Diamonds}, // Dealer card 2
+			// No additional cards needed for this scenario
+		},
+	}
+
+	// Deal cards manually to ensure predictable hands
+	s.game.Players["player1"] = NewHand()
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[0]) // 5
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[2]) // 6 (11 total)
+
+	s.game.Dealer = NewHand()
+	s.game.Dealer.AddCard(s.game.Deck.Cards[1]) // 10
+	s.game.Dealer.AddCard(s.game.Deck.Cards[3]) // 9 (19 total)
+
+	s.game.State = entities.StatePlaying
+	s.game.PlayerOrder = []string{"player1"}
+	s.game.Bets["player1"] = 100
+
+	// Make all players stand
+	s.game.Players["player1"].Status = StatusStand
+	s.game.Dealer.Status = StatusStand
+	s.game.State = entities.StateComplete
+
+	// Capture the game result being saved
+	var capturedGameResults []*entities.GameResult
+	// ProcessPayouts calls GetResults which calls SaveGameResult again
+	// so we need to expect at least two calls
+	s.mockGameRepo.EXPECT().
+		SaveGameResult(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, result *entities.GameResult) error {
+			capturedGameResults = append(capturedGameResults, result)
+			return nil
+		}).
+		MinTimes(1)
+
+	// SaveDeck is also called multiple times
+	s.mockGameRepo.EXPECT().
+		SaveDeck(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil).
+		MinTimes(1)
+
+	// Get results - player1 should lose to dealer (11 vs 19)
+	results, err := s.game.GetResults()
+	s.NoError(err)
+	s.Equal(1, len(results))
+	s.Equal("player1", results[0].PlayerID)
+	s.Equal(ResultLose, results[0].Result)
+	s.Equal(11, results[0].Score)
+
+	// Create a mock wallet service to verify wallet updates
+	mockWalletCtrl := gomock.NewController(s.T())
+	defer mockWalletCtrl.Finish()
+	mockWalletService := mock_wallet_service.NewMockWalletService(mockWalletCtrl)
+
+	// Since player lost, we expect GetOrCreateWallet to be called but not AddFunds
+	mockWalletService.EXPECT().
+		GetOrCreateWallet(gomock.Any(), "player1").
+		Return(&entities.Wallet{UserID: "player1", Balance: 1000}, false, nil).
+		Times(1)
+
+	// Process payouts with wallet updates
+	err = s.game.ProcessPayoutsWithWalletUpdates(context.Background(), mockWalletService)
+	s.NoError(err)
+
+	// Verify at least one game result was saved
+	s.NotEmpty(capturedGameResults, "At least one game result should have been saved")
+
+	// Verify all saved game results have the correct data
+	for _, capturedResult := range capturedGameResults {
+		s.Equal(s.game.ChannelID, capturedResult.ChannelID)
+		s.Equal(entities.StateDealing, capturedResult.GameType)
+		s.Equal(1, len(capturedResult.PlayerResults))
+
+		// Verify player result details
+		playerResult := capturedResult.PlayerResults[0]
+		s.Equal("player1", playerResult.PlayerID)
+		s.Equal(entities.Result(ResultLose), playerResult.Result)
+		s.Equal(11, playerResult.Score)
+
+		// Verify dealer details
+		blackjackDetails, ok := capturedResult.Details.(*BlackjackDetails)
+		s.True(ok, "Details should be of type BlackjackDetails")
+		s.Equal(19, blackjackDetails.DealerScore)
+		s.False(blackjackDetails.IsBlackjack)
+		s.False(blackjackDetails.IsBust)
+	}
+}
+
+// TestPayoutCalculation_Push tests the payout calculation when player and dealer push (tie)
+func (s *GameTestSuite) TestPayoutCalculation_Push() {
+	// Setup game with controlled cards for predictable results
+	_ = s.game.AddPlayer("player1")
+
+	// Create a specific deck for testing - setup for a push (tie)
+	s.game.Deck = &entities.Deck{
+		Cards: []*entities.Card{
+			{Rank: entities.Ten, Suit: entities.Hearts},     // Player card 1
+			{Rank: entities.Ten, Suit: entities.Clubs},      // Dealer card 1
+			{Rank: entities.Seven, Suit: entities.Spades},   // Player card 2
+			{Rank: entities.Seven, Suit: entities.Diamonds}, // Dealer card 2
+			// No additional cards needed for this scenario
+		},
+	}
+
+	// Deal cards manually to ensure predictable hands
+	s.game.Players["player1"] = NewHand()
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[0]) // 10
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[2]) // 7 (17 total)
+
+	s.game.Dealer = NewHand()
+	s.game.Dealer.AddCard(s.game.Deck.Cards[1]) // 10
+	s.game.Dealer.AddCard(s.game.Deck.Cards[3]) // 7 (17 total)
+
+	s.game.State = entities.StatePlaying
+	s.game.PlayerOrder = []string{"player1"}
+	s.game.Bets["player1"] = 100
+
+	// Make all players stand
+	s.game.Players["player1"].Status = StatusStand
+	s.game.Dealer.Status = StatusStand
+	s.game.State = entities.StateComplete
+
+	// Capture the game result being saved
+	var capturedGameResults []*entities.GameResult
+	// ProcessPayouts calls GetResults which calls SaveGameResult again
+	// so we need to expect at least two calls
+	s.mockGameRepo.EXPECT().
+		SaveGameResult(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, result *entities.GameResult) error {
+			capturedGameResults = append(capturedGameResults, result)
+			return nil
+		}).
+		MinTimes(1)
+
+	// SaveDeck is also called multiple times
+	s.mockGameRepo.EXPECT().
+		SaveDeck(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil).
+		MinTimes(1)
+
+	// Get results - player1 should push with dealer (both have 17)
+	results, err := s.game.GetResults()
+	s.NoError(err)
+	s.Equal(1, len(results))
+	s.Equal("player1", results[0].PlayerID)
+	s.Equal(ResultPush, results[0].Result)
+	s.Equal(17, results[0].Score)
+
+	// Create a mock wallet service to verify wallet updates
+	mockWalletCtrl := gomock.NewController(s.T())
+	defer mockWalletCtrl.Finish()
+	mockWalletService := mock_wallet_service.NewMockWalletService(mockWalletCtrl)
+
+	// In a push, player gets their original bet back
+	mockWalletService.EXPECT().
+		GetOrCreateWallet(gomock.Any(), "player1").
+		Return(&entities.Wallet{UserID: "player1", Balance: 1000}, false, nil).
+		Times(2) // Called before and after adding funds
+
+	// Expect AddFunds to be called with the original bet amount
+	mockWalletService.EXPECT().
+		AddFunds(gomock.Any(), "player1", int64(100), gomock.Any()).
+		Return(nil).
+		Times(1)
+
+	// Process payouts with wallet updates
+	err = s.game.ProcessPayoutsWithWalletUpdates(context.Background(), mockWalletService)
+	s.NoError(err)
+
+	// Verify at least one game result was saved
+	s.NotEmpty(capturedGameResults, "At least one game result should have been saved")
+
+	// Verify all saved game results have the correct data
+	for _, capturedResult := range capturedGameResults {
+		s.Equal(s.game.ChannelID, capturedResult.ChannelID)
+		s.Equal(entities.StateDealing, capturedResult.GameType)
+		s.Equal(1, len(capturedResult.PlayerResults))
+
+		// Verify player result details
+		playerResult := capturedResult.PlayerResults[0]
+		s.Equal("player1", playerResult.PlayerID)
+		s.Equal(entities.Result(ResultPush), playerResult.Result)
+		s.Equal(17, playerResult.Score)
+
+		// Verify dealer details
+		blackjackDetails, ok := capturedResult.Details.(*BlackjackDetails)
+		s.True(ok, "Details should be of type BlackjackDetails")
+		s.Equal(17, blackjackDetails.DealerScore)
+		s.False(blackjackDetails.IsBlackjack)
+		s.False(blackjackDetails.IsBust)
+	}
+}
+
+// TestPayoutCalculation_Blackjack tests the payout calculation when player has blackjack
+func (s *GameTestSuite) TestPayoutCalculation_Blackjack() {
+	// Setup game with controlled cards for predictable results
+	_ = s.game.AddPlayer("player1")
+
+	// Create a specific deck for testing - setup for player blackjack
+	s.game.Deck = &entities.Deck{
+		Cards: []*entities.Card{
+			{Rank: entities.Ace, Suit: entities.Hearts},    // Player card 1
+			{Rank: entities.Ten, Suit: entities.Clubs},     // Dealer card 1
+			{Rank: entities.Ten, Suit: entities.Spades},    // Player card 2
+			{Rank: entities.Five, Suit: entities.Diamonds}, // Dealer card 2
+			// No additional cards needed for this scenario
+		},
+	}
+
+	// Deal cards manually to ensure predictable hands
+	s.game.Players["player1"] = NewHand()
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[0]) // Ace
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[2]) // 10 (Blackjack: 21)
+
+	s.game.Dealer = NewHand()
+	s.game.Dealer.AddCard(s.game.Deck.Cards[1]) // 10
+	s.game.Dealer.AddCard(s.game.Deck.Cards[3]) // 5 (15 total)
+
+	s.game.State = entities.StatePlaying
+	s.game.PlayerOrder = []string{"player1"}
+	s.game.Bets["player1"] = 100
+
+	// Make all players stand
+	s.game.Players["player1"].Status = StatusStand
+	s.game.Dealer.Status = StatusStand
+	s.game.State = entities.StateComplete
+
+	// Capture the game result being saved
+	var capturedGameResults []*entities.GameResult
+	// ProcessPayouts calls GetResults which calls SaveGameResult again
+	// so we need to expect at least two calls
+	s.mockGameRepo.EXPECT().
+		SaveGameResult(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, result *entities.GameResult) error {
+			capturedGameResults = append(capturedGameResults, result)
+			return nil
+		}).
+		MinTimes(1)
+
+	// SaveDeck is also called multiple times
+	s.mockGameRepo.EXPECT().
+		SaveDeck(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil).
+		MinTimes(1)
+
+	// Get results - player1 should have blackjack
+	results, err := s.game.GetResults()
+	s.NoError(err)
+	s.Equal(1, len(results))
+	s.Equal("player1", results[0].PlayerID)
+	s.Equal(ResultBlackjack, results[0].Result)
+	s.Equal(21, results[0].Score)
+
+	// Create a mock wallet service to verify wallet updates
+	mockWalletCtrl := gomock.NewController(s.T())
+	defer mockWalletCtrl.Finish()
+	mockWalletService := mock_wallet_service.NewMockWalletService(mockWalletCtrl)
+
+	// For blackjack, player gets 3:2 payout (bet + 1.5x bet = 250 for a 100 bet)
+	mockWalletService.EXPECT().
+		GetOrCreateWallet(gomock.Any(), "player1").
+		Return(&entities.Wallet{UserID: "player1", Balance: 1000}, false, nil).
+		Times(2) // Called before and after adding funds
+
+	// Expect AddFunds to be called with the blackjack payout amount
+	mockWalletService.EXPECT().
+		AddFunds(gomock.Any(), "player1", int64(250), gomock.Any()).
+		Return(nil).
+		Times(1)
+
+	// Process payouts with wallet updates
+	err = s.game.ProcessPayoutsWithWalletUpdates(context.Background(), mockWalletService)
+	s.NoError(err)
+
+	// Verify at least one game result was saved
+	s.NotEmpty(capturedGameResults, "At least one game result should have been saved")
+
+	// Verify all saved game results have the correct data
+	for _, capturedResult := range capturedGameResults {
+		s.Equal(s.game.ChannelID, capturedResult.ChannelID)
+		s.Equal(entities.StateDealing, capturedResult.GameType)
+		s.Equal(1, len(capturedResult.PlayerResults))
+
+		// Verify player result details
+		playerResult := capturedResult.PlayerResults[0]
+		s.Equal("player1", playerResult.PlayerID)
+		s.Equal(entities.Result(ResultBlackjack), playerResult.Result)
+		s.Equal(21, playerResult.Score)
+
+		// Verify dealer details
+		blackjackDetails, ok := capturedResult.Details.(*BlackjackDetails)
+		s.True(ok, "Details should be of type BlackjackDetails")
+		s.Equal(15, blackjackDetails.DealerScore)
+		s.False(blackjackDetails.IsBlackjack)
+		s.False(blackjackDetails.IsBust)
+	}
+}
+
+// TestPayoutCalculation_DealerBust tests the payout calculation when dealer busts
+func (s *GameTestSuite) TestPayoutCalculation_DealerBust() {
+	// Setup game with controlled cards for predictable results
+	_ = s.game.AddPlayer("player1")
+
+	// Create a specific deck for testing - setup for dealer bust
+	s.game.Deck = &entities.Deck{
+		Cards: []*entities.Card{
+			{Rank: entities.Ten, Suit: entities.Hearts},   // Player card 1
+			{Rank: entities.Ten, Suit: entities.Clubs},    // Dealer card 1
+			{Rank: entities.Five, Suit: entities.Spades},  // Player card 2
+			{Rank: entities.Six, Suit: entities.Diamonds}, // Dealer card 2
+			{Rank: entities.Jack, Suit: entities.Hearts},  // Dealer hit card (bust)
+		},
+	}
+
+	// Deal cards manually to ensure predictable hands
+	s.game.Players["player1"] = NewHand()
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[0]) // 10
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[2]) // 5 (15 total)
+
+	s.game.Dealer = NewHand()
+	s.game.Dealer.AddCard(s.game.Deck.Cards[1]) // 10
+	s.game.Dealer.AddCard(s.game.Deck.Cards[3]) // 6 (16 total)
+	s.game.Dealer.AddCard(s.game.Deck.Cards[4]) // 10 (26 total - bust)
+
+	s.game.State = entities.StatePlaying
+	s.game.PlayerOrder = []string{"player1"}
+	s.game.Bets["player1"] = 100
+
+	// Make all players stand
+	s.game.Players["player1"].Status = StatusStand
+	s.game.Dealer.Status = StatusStand
+	s.game.State = entities.StateComplete
+
+	// Capture the game result being saved
+	var capturedGameResults []*entities.GameResult
+	// ProcessPayouts calls GetResults which calls SaveGameResult again
+	// so we need to expect at least two calls
+	s.mockGameRepo.EXPECT().
+		SaveGameResult(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, result *entities.GameResult) error {
+			capturedGameResults = append(capturedGameResults, result)
+			return nil
+		}).
+		MinTimes(1)
+
+	// SaveDeck is also called multiple times
+	s.mockGameRepo.EXPECT().
+		SaveDeck(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil).
+		MinTimes(1)
+
+	// Get results - player1 should win because dealer busts
+	results, err := s.game.GetResults()
+	s.NoError(err)
+	s.Equal(1, len(results))
+	s.Equal("player1", results[0].PlayerID)
+	s.Equal(ResultWin, results[0].Result)
+	s.Equal(15, results[0].Score)
+
+	// Create a mock wallet service to verify wallet updates
+	mockWalletCtrl := gomock.NewController(s.T())
+	defer mockWalletCtrl.Finish()
+	mockWalletService := mock_wallet_service.NewMockWalletService(mockWalletCtrl)
+
+	// For regular win, player gets 1:1 payout (bet + equal amount = 200 for a 100 bet)
+	mockWalletService.EXPECT().
+		GetOrCreateWallet(gomock.Any(), "player1").
+		Return(&entities.Wallet{UserID: "player1", Balance: 1000}, false, nil).
+		Times(2) // Called before and after adding funds
+
+	// Expect AddFunds to be called with the regular win payout amount
+	mockWalletService.EXPECT().
+		AddFunds(gomock.Any(), "player1", int64(200), gomock.Any()).
+		Return(nil).
+		Times(1)
+
+	// Process payouts with wallet updates
+	err = s.game.ProcessPayoutsWithWalletUpdates(context.Background(), mockWalletService)
+	s.NoError(err)
+
+	// Verify at least one game result was saved
+	s.NotEmpty(capturedGameResults, "At least one game result should have been saved")
+
+	// Verify all saved game results have the correct data
+	for _, capturedResult := range capturedGameResults {
+		s.Equal(s.game.ChannelID, capturedResult.ChannelID)
+		s.Equal(entities.StateDealing, capturedResult.GameType)
+		s.Equal(1, len(capturedResult.PlayerResults))
+
+		// Verify player result details
+		playerResult := capturedResult.PlayerResults[0]
+		s.Equal("player1", playerResult.PlayerID)
+		s.Equal(entities.Result(ResultWin), playerResult.Result)
+		s.Equal(15, playerResult.Score)
+
+		// Verify dealer details
+		blackjackDetails, ok := capturedResult.Details.(*BlackjackDetails)
+		s.True(ok, "Details should be of type BlackjackDetails")
+		s.Equal(26, blackjackDetails.DealerScore)
+		s.False(blackjackDetails.IsBlackjack)
+		s.True(blackjackDetails.IsBust)
+	}
+}
+
+// TestBlackjackPayout tests the payout calculation for blackjack
+func (s *GameTestSuite) TestBlackjackPayout() {
+	// Setup game with controlled cards for predictable results
+	_ = s.game.AddPlayer("player1")
+
+	// Create a specific deck for testing - setup for a blackjack
+	s.game.Deck = &entities.Deck{
+		Cards: []*entities.Card{
+			{Rank: entities.Ace, Suit: entities.Hearts},    // Player card 1
+			{Rank: entities.Ten, Suit: entities.Clubs},     // Dealer card 1
+			{Rank: entities.Ten, Suit: entities.Spades},    // Player card 2
+			{Rank: entities.Five, Suit: entities.Diamonds}, // Dealer card 2
+		},
+	}
+
+	// Deal cards manually to ensure predictable hands
+	s.game.Players["player1"] = NewHand()
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[0]) // Ace
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[2]) // 10 (blackjack)
+
+	s.game.Dealer = NewHand()
+	s.game.Dealer.AddCard(s.game.Deck.Cards[1]) // 10
+	s.game.Dealer.AddCard(s.game.Deck.Cards[3]) // 5 (15 total)
+
+	s.game.State = entities.StatePlaying
+	s.game.PlayerOrder = []string{"player1"}
+	s.game.Bets["player1"] = 100
+
+	// Make all players stand
+	s.game.Players["player1"].Status = StatusStand
+	s.game.Dealer.Status = StatusStand
+	s.game.State = entities.StateComplete
+
+	// Capture the game result being saved
+	var capturedGameResults []*entities.GameResult
+	// ProcessPayouts calls GetResults which calls SaveGameResult again
+	// so we need to expect at least two calls
+	s.mockGameRepo.EXPECT().
+		SaveGameResult(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, result *entities.GameResult) error {
+			capturedGameResults = append(capturedGameResults, result)
+			return nil
+		}).
+		MinTimes(1)
+
+	// SaveDeck is also called multiple times
+	s.mockGameRepo.EXPECT().
+		SaveDeck(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil).
+		MinTimes(1)
+
+	// Get results - player1 should win with blackjack
+	results, err := s.game.GetResults()
+	s.NoError(err)
+	s.Equal(1, len(results))
+	s.Equal("player1", results[0].PlayerID)
+	s.Equal(ResultBlackjack, results[0].Result)
+	s.Equal(21, results[0].Score)
+
+	// Create a mock wallet service to verify wallet updates
+	mockWalletCtrl := gomock.NewController(s.T())
+	defer mockWalletCtrl.Finish()
+	mockWalletService := mock_wallet_service.NewMockWalletService(mockWalletCtrl)
+
+	// For blackjack, player gets 3:2 payout (bet + 1.5x bet = 250 for a 100 bet)
+	mockWalletService.EXPECT().
+		GetOrCreateWallet(gomock.Any(), "player1").
+		Return(&entities.Wallet{UserID: "player1", Balance: 1000}, false, nil).
+		Times(2) // Called before and after adding funds
+
+	// Expect AddFunds to be called with the blackjack payout amount
+	mockWalletService.EXPECT().
+		AddFunds(gomock.Any(), "player1", int64(250), gomock.Any()).
+		Return(nil).
+		Times(1)
+
+	// Process payouts with wallet updates
+	err = s.game.ProcessPayoutsWithWalletUpdates(context.Background(), mockWalletService)
+	s.NoError(err)
+
+	// Verify at least one game result was saved
+	s.NotEmpty(capturedGameResults, "At least one game result should have been saved")
+
+	// Verify all saved game results have the correct data
+	for _, capturedResult := range capturedGameResults {
+		s.Equal(s.game.ChannelID, capturedResult.ChannelID)
+		s.Equal(entities.StateDealing, capturedResult.GameType)
+		s.Equal(1, len(capturedResult.PlayerResults))
+
+		// Verify player result details
+		playerResult := capturedResult.PlayerResults[0]
+		s.Equal("player1", playerResult.PlayerID)
+		s.Equal(entities.Result(ResultBlackjack), playerResult.Result)
+		s.Equal(21, playerResult.Score)
+
+		// Verify dealer details
+		blackjackDetails, ok := capturedResult.Details.(*BlackjackDetails)
+		s.True(ok, "Details should be of type BlackjackDetails")
+		s.Equal(15, blackjackDetails.DealerScore)
+		s.False(blackjackDetails.IsBlackjack)
+		s.False(blackjackDetails.IsBust)
+	}
+}
+
+// TestGameCompletionWithBust tests game completion when a player busts
+func (s *GameTestSuite) TestGameCompletionWithBust() {
+	// Setup game with multiple players where one player busts
+	_ = s.game.AddPlayer("player1")
+	_ = s.game.AddPlayer("player2")
+
+	// Create a specific deck for testing
+	s.game.Deck = &entities.Deck{
+		Cards: []*entities.Card{
+			{Rank: entities.Ten, Suit: entities.Hearts},    // Player1 card 1
+			{Rank: entities.Nine, Suit: entities.Clubs},    // Player2 card 1
+			{Rank: entities.Ten, Suit: entities.Spades},    // Dealer card 1
+			{Rank: entities.Seven, Suit: entities.Hearts},  // Player1 card 2
+			{Rank: entities.Eight, Suit: entities.Clubs},   // Player2 card 2
+			{Rank: entities.Seven, Suit: entities.Spades},  // Dealer card 2
+			{Rank: entities.King, Suit: entities.Diamonds}, // Player2 hit card (bust)
+		},
+	}
+
+	// Deal cards manually to ensure predictable hands
+	s.game.Players["player1"] = NewHand()
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[0]) // 10
+	s.game.Players["player1"].AddCard(s.game.Deck.Cards[3]) // 7
+
+	s.game.Players["player2"] = NewHand()
+	s.game.Players["player2"].AddCard(s.game.Deck.Cards[1]) // 9
+	s.game.Players["player2"].AddCard(s.game.Deck.Cards[4]) // 8
+	s.game.Players["player2"].AddCard(s.game.Deck.Cards[6]) // K (bust with 27)
+	s.game.Players["player2"].Status = StatusBust
+
+	s.game.Dealer = NewHand()
+	s.game.Dealer.AddCard(s.game.Deck.Cards[2]) // 10
+	s.game.Dealer.AddCard(s.game.Deck.Cards[5]) // 7
+
+	s.game.State = entities.StatePlaying
+	s.game.PlayerOrder = []string{"player1", "player2"}
+
+	// Player1 is standing, player2 is bust
+	s.game.Players["player1"].Status = StatusStand
+	s.game.Dealer.Status = StatusStand
+	s.game.State = entities.StateComplete
+
+	// Verify all players are done
+	s.True(s.game.CheckAllPlayersDone(), "All players should be done when one stands and one busts")
+
+	// Mock the SaveGameResult and SaveDeck calls for GetResults
+	s.mockGameRepo.EXPECT().
+		SaveGameResult(gomock.Any(), gomock.Any()).
+		Return(nil)
+
+	s.mockGameRepo.EXPECT().
+		SaveDeck(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil)
+
+	// Get results
+	results, err := s.game.GetResults()
+	s.NoError(err)
+	s.Equal(2, len(results))
+
+	// Player1 should push with dealer (both have 17)
+	s.Equal("player1", results[0].PlayerID)
+	s.Equal(ResultPush, results[0].Result)
+	s.Equal(17, results[0].Score)
+
+	// Player2 should lose (bust)
+	s.Equal("player2", results[1].PlayerID)
+	s.Equal(ResultLose, results[1].Result)
 }

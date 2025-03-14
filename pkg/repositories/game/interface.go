@@ -6,6 +6,8 @@ import (
 	"github.com/fadedpez/tucoramirez/pkg/entities"
 )
 
+//go:generate mockgen -source=$GOFILE -destination=mock/mock.go -package=mock_game
+
 // Repository defines storage operations for deck state and game results
 type Repository interface {
 	// Deck operations
