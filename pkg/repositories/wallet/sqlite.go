@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -105,9 +106,24 @@ func (r *SQLiteRepository) GetWallet(ctx context.Context, userID string) (*entit
 	}
 
 	// Parse the timestamp
-	wallet.LastUpdated, err = time.Parse("2006-01-02 15:04:05", updatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing timestamp: %w", err)
+	// Try parsing with different formats since SQLite might store timestamps in different formats
+	formats := []string{
+		"2006-01-02 15:04:05",  // SQLite default format
+		"2006-01-02T15:04:05Z",  // ISO 8601 format
+		"2006-01-02T15:04:05-07:00", // ISO 8601 with timezone
+		time.RFC3339,              // Another common format
+	}
+
+	var parseErr error
+	for _, format := range formats {
+		wallet.LastUpdated, parseErr = time.Parse(format, updatedAt)
+		if parseErr == nil {
+			break
+		}
+	}
+
+	if parseErr != nil {
+		return nil, fmt.Errorf("error parsing timestamp '%s': %w", updatedAt, parseErr)
 	}
 
 	return &wallet, nil
@@ -115,37 +131,59 @@ func (r *SQLiteRepository) GetWallet(ctx context.Context, userID string) (*entit
 
 // SaveWallet creates or updates a wallet
 func (r *SQLiteRepository) SaveWallet(ctx context.Context, wallet *entities.Wallet) error {
+	// Use a standardized timestamp format (SQLite default format)
+	formattedTime := wallet.LastUpdated.Format("2006-01-02 15:04:05")
+	
+	// Log the wallet save operation
+	log.Printf("[WALLET_REPO] Saving wallet for user %s: Balance=$%d, LoanAmount=$%d, Time=%s", 
+		wallet.UserID, wallet.Balance, wallet.LoanAmount, formattedTime)
+	
 	query := `
 		INSERT INTO wallets (user_id, balance, loan_amount, updated_at)
-		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET
 			balance = ?,
 			loan_amount = ?,
-			updated_at = CURRENT_TIMESTAMP
+			updated_at = ?
 	`
 
 	_, err := r.db.ExecContext(ctx, query,
-		wallet.UserID, wallet.Balance, wallet.LoanAmount,
-		wallet.Balance, wallet.LoanAmount,
+		wallet.UserID, wallet.Balance, wallet.LoanAmount, formattedTime,
+		wallet.Balance, wallet.LoanAmount, formattedTime,
 	)
 
 	if err != nil {
+		log.Printf("[WALLET_REPO] Error saving wallet for user %s: %v", wallet.UserID, err)
 		return fmt.Errorf("error saving wallet: %w", err)
 	}
+
+	// Verify the wallet was saved correctly by retrieving it again
+	updatedWallet, err := r.GetWallet(ctx, wallet.UserID)
+	if err != nil {
+		log.Printf("[WALLET_REPO] Error verifying wallet save for user %s: %v", wallet.UserID, err)
+		return fmt.Errorf("error verifying wallet save: %w", err)
+	}
+
+	// Log the verification result
+	log.Printf("[WALLET_REPO] Verified wallet save for user %s: Balance=$%d, LoanAmount=$%d", 
+		updatedWallet.UserID, updatedWallet.Balance, updatedWallet.LoanAmount)
 
 	return nil
 }
 
 // UpdateBalance atomically updates a wallet's balance
 func (r *SQLiteRepository) UpdateBalance(ctx context.Context, userID string, amount int64) error {
+	// Use a standardized timestamp format (SQLite default format)
+	formattedTime := time.Now().Format("2006-01-02 15:04:05")
+
 	query := `
 		UPDATE wallets
 		SET balance = balance + ?,
-			updated_at = CURRENT_TIMESTAMP
+			updated_at = ?
 		WHERE user_id = ?
 	`
 
-	result, err := r.db.ExecContext(ctx, query, amount, userID)
+	result, err := r.db.ExecContext(ctx, query, amount, formattedTime, userID)
 	if err != nil {
 		return fmt.Errorf("error updating balance: %w", err)
 	}
@@ -236,9 +274,24 @@ func (r *SQLiteRepository) GetTransactions(ctx context.Context, userID string, l
 		}
 
 		// Parse the timestamp
-		tx.Timestamp, err = time.Parse("2006-01-02 15:04:05", timestamp)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing timestamp: %w", err)
+		// Try parsing with different formats since SQLite might store timestamps in different formats
+		formats := []string{
+			"2006-01-02 15:04:05",  // SQLite default format
+			"2006-01-02T15:04:05Z",  // ISO 8601 format
+			"2006-01-02T15:04:05-07:00", // ISO 8601 with timezone
+			time.RFC3339,              // Another common format
+		}
+
+		var parseErr error
+		for _, format := range formats {
+			tx.Timestamp, parseErr = time.Parse(format, timestamp)
+			if parseErr == nil {
+				break
+			}
+		}
+
+		if parseErr != nil {
+			return nil, fmt.Errorf("error parsing timestamp '%s': %w", timestamp, parseErr)
 		}
 
 		transactions = append(transactions, &tx)
@@ -289,9 +342,24 @@ func (r *SQLiteRepository) GetTransactionsByType(ctx context.Context, userID str
 		}
 
 		// Parse the timestamp
-		tx.Timestamp, err = time.Parse("2006-01-02 15:04:05", timestamp)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing timestamp: %w", err)
+		// Try parsing with different formats since SQLite might store timestamps in different formats
+		formats := []string{
+			"2006-01-02 15:04:05",  // SQLite default format
+			"2006-01-02T15:04:05Z",  // ISO 8601 format
+			"2006-01-02T15:04:05-07:00", // ISO 8601 with timezone
+			time.RFC3339,              // Another common format
+		}
+
+		var parseErr error
+		for _, format := range formats {
+			tx.Timestamp, parseErr = time.Parse(format, timestamp)
+			if parseErr == nil {
+				break
+			}
+		}
+
+		if parseErr != nil {
+			return nil, fmt.Errorf("error parsing timestamp '%s': %w", timestamp, parseErr)
 		}
 
 		transactions = append(transactions, &tx)

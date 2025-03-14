@@ -3,6 +3,8 @@ package wallet
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log"
 	"time"
 
 	"github.com/fadedpez/tucoramirez/pkg/entities"
@@ -68,10 +70,17 @@ func (s *Service) AddFunds(ctx context.Context, userID string, amount int64, des
 		return ErrNegativeAmount
 	}
 
+	// Log the start of the operation
+	log.Printf("[WALLET] Adding $%d to wallet for user %s with description: %s", amount, userID, description)
+
 	wallet, err := s.repo.GetWallet(ctx, userID)
 	if err != nil {
+		log.Printf("[WALLET] Error getting wallet for user %s: %v", userID, err)
 		return err
 	}
+
+	// Log the wallet state before update
+	log.Printf("[WALLET] Before update - User %s: Balance=$%d, LoanAmount=$%d", userID, wallet.Balance, wallet.LoanAmount)
 
 	// Update the wallet balance directly
 	wallet.Balance += amount
@@ -79,8 +88,12 @@ func (s *Service) AddFunds(ctx context.Context, userID string, amount int64, des
 	
 	// Save the updated wallet
 	if err := s.repo.SaveWallet(ctx, wallet); err != nil {
+		log.Printf("[WALLET] Error saving wallet for user %s: %v", userID, err)
 		return err
 	}
+
+	// Log the wallet state after update
+	log.Printf("[WALLET] After update - User %s: Balance=$%d, LoanAmount=$%d", userID, wallet.Balance, wallet.LoanAmount)
 
 	// Record the transaction
 	transaction := &entities.Transaction{
@@ -93,7 +106,15 @@ func (s *Service) AddFunds(ctx context.Context, userID string, amount int64, des
 		BalanceAfter: wallet.Balance,
 	}
 
-	return s.repo.AddTransaction(ctx, transaction)
+	// Log the transaction
+	log.Printf("[WALLET] Recording transaction: ID=%s, User=%s, Amount=$%d, Type=%s", 
+		transaction.ID, userID, amount, transaction.Type)
+
+	err = s.repo.AddTransaction(ctx, transaction)
+	if err != nil {
+		log.Printf("[WALLET] Error adding transaction for user %s: %v", userID, err)
+	}
+	return err
 }
 
 // RemoveFunds removes funds from a user's wallet if sufficient funds exist
@@ -222,4 +243,36 @@ func (s *Service) RepayLoan(ctx context.Context, userID string, amount int64) er
 // GetRecentTransactions retrieves recent transactions for a user
 func (s *Service) GetRecentTransactions(ctx context.Context, userID string, limit int) ([]*entities.Transaction, error) {
 	return s.repo.GetTransactions(ctx, userID, limit)
+}
+
+// EnsureFundsWithLoan checks if a user has enough funds for a specified amount.
+// If not, it automatically gives them a loan of the specified loan amount.
+// Returns the updated wallet, whether a loan was given, and any error.
+func (s *Service) EnsureFundsWithLoan(ctx context.Context, userID string, requiredAmount int64, loanAmount int64) (*entities.Wallet, bool, error) {
+	// Get the current wallet
+	wallet, _, err := s.GetOrCreateWallet(ctx, userID)
+	if err != nil {
+		return nil, false, fmt.Errorf("error getting wallet: %w", err)
+	}
+
+	// Check if they have enough funds
+	if wallet.Balance >= requiredAmount {
+		// They have enough funds, no loan needed
+		return wallet, false, nil
+	}
+
+	// They need a loan
+	err = s.TakeLoan(ctx, userID, loanAmount)
+	if err != nil {
+		return nil, false, fmt.Errorf("error taking loan: %w", err)
+	}
+
+	// Get the updated wallet after the loan
+	updatedWallet, _, err := s.GetOrCreateWallet(ctx, userID)
+	if err != nil {
+		return nil, false, fmt.Errorf("error getting updated wallet: %w", err)
+	}
+
+	// Return the updated wallet and indicate a loan was given
+	return updatedWallet, true, nil
 }

@@ -15,11 +15,13 @@ const (
 type GameState string
 
 const (
-	StateWaiting  GameState = "WAITING"
-	StateDealing  GameState = "DEALING"
-	StatePlaying  GameState = "PLAYING"
-	StateDealer   GameState = "DEALER"
-	StateComplete GameState = "COMPLETE"
+	StateWaiting   GameState = "WAITING"
+	StateBetting   GameState = "BETTING"
+	StateDealing   GameState = "DEALING"
+	StateSpecialBet GameState = "SPECIAL_BET"
+	StatePlaying   GameState = "PLAYING"
+	StateDealer    GameState = "DEALER"
+	StateComplete  GameState = "COMPLETE"
 )
 
 // GameDetails defines what game-specific result details must provide
