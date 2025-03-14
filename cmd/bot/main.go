@@ -31,10 +31,11 @@ func main() {
 
 	// You can use an environment variable to choose the repository type
 	storageType := os.Getenv("STORAGE_TYPE") // Add this to your .env file
+	// Ensure data directory exists for SQLite storage
+	dataDir := "./data"
 
 	if storageType == "sqlite" {
 		// Ensure data directory exists
-		dataDir := "./data"
 		log.Printf("Creating data directory at %s if it doesn't exist", dataDir)
 		if err := os.MkdirAll(dataDir, 0755); err != nil {
 			log.Fatalf("Failed to create data directory: %v", err)
@@ -58,8 +59,26 @@ func main() {
 	}
 
 	// Create new bot instance with repository
-	// Initialize wallet repository (in-memory for now)
-	walletRepository := walletRepo.NewMemoryRepository()
+	// Initialize wallet repository
+	var walletRepository walletRepo.Repository
+	if storageType == "sqlite" {
+		walletDbPath := dataDir + "/wallets.db"
+		log.Printf("Initializing SQLite wallet repository at %s", walletDbPath)
+		sqliteWalletRepo, err := walletRepo.NewSQLiteRepository(walletDbPath)
+		if err != nil {
+			log.Printf("Failed to initialize SQLite wallet repository: %v", err)
+			log.Println("Falling back to in-memory wallet repository")
+			walletRepository = walletRepo.NewMemoryRepository()
+		} else {
+			walletRepository = sqliteWalletRepo
+			log.Println("Successfully initialized SQLite repository for wallet data")
+		}
+	} else {
+		// Default to memory repository
+		walletRepository = walletRepo.NewMemoryRepository()
+		log.Println("Using in-memory repository for wallet data (data will be lost on restart)")
+	}
+
 	wService := walletService.NewService(walletRepository)
 	bot, err := discord.NewBot(token, gameRepo, wService)
 	if err != nil {

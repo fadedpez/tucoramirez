@@ -3,6 +3,7 @@ package wallet
 import (
 	"context"
 	"errors"
+	"log"
 	"time"
 
 	"github.com/fadedpez/tucoramirez/pkg/entities"
@@ -68,10 +69,17 @@ func (s *Service) AddFunds(ctx context.Context, userID string, amount int64, des
 		return ErrNegativeAmount
 	}
 
+	// Log the start of the operation
+	log.Printf("[WALLET] Adding $%d to wallet for user %s with description: %s", amount, userID, description)
+
 	wallet, err := s.repo.GetWallet(ctx, userID)
 	if err != nil {
+		log.Printf("[WALLET] Error getting wallet for user %s: %v", userID, err)
 		return err
 	}
+
+	// Log the wallet state before update
+	log.Printf("[WALLET] Before update - User %s: Balance=$%d, LoanAmount=$%d", userID, wallet.Balance, wallet.LoanAmount)
 
 	// Update the wallet balance directly
 	wallet.Balance += amount
@@ -79,8 +87,12 @@ func (s *Service) AddFunds(ctx context.Context, userID string, amount int64, des
 	
 	// Save the updated wallet
 	if err := s.repo.SaveWallet(ctx, wallet); err != nil {
+		log.Printf("[WALLET] Error saving wallet for user %s: %v", userID, err)
 		return err
 	}
+
+	// Log the wallet state after update
+	log.Printf("[WALLET] After update - User %s: Balance=$%d, LoanAmount=$%d", userID, wallet.Balance, wallet.LoanAmount)
 
 	// Record the transaction
 	transaction := &entities.Transaction{
@@ -93,7 +105,15 @@ func (s *Service) AddFunds(ctx context.Context, userID string, amount int64, des
 		BalanceAfter: wallet.Balance,
 	}
 
-	return s.repo.AddTransaction(ctx, transaction)
+	// Log the transaction
+	log.Printf("[WALLET] Recording transaction: ID=%s, User=%s, Amount=$%d, Type=%s", 
+		transaction.ID, userID, amount, transaction.Type)
+
+	err = s.repo.AddTransaction(ctx, transaction)
+	if err != nil {
+		log.Printf("[WALLET] Error adding transaction for user %s: %v", userID, err)
+	}
+	return err
 }
 
 // RemoveFunds removes funds from a user's wallet if sufficient funds exist

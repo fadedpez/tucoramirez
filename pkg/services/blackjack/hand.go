@@ -76,3 +76,8 @@ func (h *Hand) Stand() error {
 	h.Status = StatusStand
 	return nil
 }
+
+// Value returns the best possible score for the hand
+func (h *Hand) Value() int {
+	return GetBestScore(h.Cards)
+}

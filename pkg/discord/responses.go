@@ -49,9 +49,17 @@ func createGameEmbed(game *blackjack.Game, s SessionInterface, guildID string) *
 			playerName = member.User.Username
 		}
 
+		// Add bet amount if available
+		if bet, hasBet := game.Bets[playerID]; hasBet {
+			playerName = fmt.Sprintf("%s (Bet: $%d)", playerName, bet)
+		}
+
 		// Add turn indicator if it's this player's turn
 		var namePrefix string
-		if game.State == entities.StatePlaying && playerID == currentPlayerID {
+		if (game.State == entities.StatePlaying && playerID == currentPlayerID) ||
+			(game.State == entities.StateBetting && len(game.PlayerOrder) > 0 &&
+				game.CurrentBettingPlayer < len(game.PlayerOrder) &&
+				game.PlayerOrder[game.CurrentBettingPlayer] == playerID) {
 			namePrefix = "👉 " // Pointing finger emoji to indicate current turn
 		} else {
 			namePrefix = "" // No emoji for other players
@@ -93,25 +101,40 @@ func getGameResultsDescription(game *blackjack.Game, s SessionInterface, guildID
 		results = fmt.Sprintf("¡El Dealer tiene %d! Let's see who won...\n\n", dealerScore)
 	}
 
+	// Calculate payouts for each player
+	payouts := game.ProcessPayouts()
+
 	for playerID, hand := range game.Players {
 		playerScore := blackjack.GetBestScore(hand.Cards)
 		playerResult := ""
+		bet := game.Bets[playerID]
+		payout := payouts[playerID]
+		
+		// For blackjack, the payout already includes the correct amount (bet + winnings)
+		// For other results, we need to calculate the net result differently
+		var netResult int64
 
 		switch {
 		case hand.Status == blackjack.StatusBust:
 			playerResult = " 💥 ¡BUST!"
+			netResult = -bet // Loss equal to bet amount
 		case dealerScore > 21:
 			playerResult = " 💰 ¡GANADOR!"
+			netResult = payout - bet // Win amount minus original bet
 		case blackjack.CompareHands(hand.Cards, game.Dealer.Cards) > 0:
 			// Player wins (including blackjack over non-blackjack 21)
 			if blackjack.IsBlackjack(hand.Cards) {
 				playerResult = " 💰 ¡BLACKJACK! ¡GANADOR!"
+				// For blackjack, payout is already correct (includes original bet + 3:2 winnings)
+				netResult = payout - bet
 			} else {
 				playerResult = " 💰 ¡GANADOR!"
+				netResult = payout - bet // Win amount minus original bet
 			}
 		case blackjack.CompareHands(hand.Cards, game.Dealer.Cards) < 0:
 			// Dealer wins
-			playerResult = " 💔 ¡PERDEDOR!"
+			playerResult = " 🤦‍♂️ ¡PERDEDOR!"
+			netResult = -bet // Loss equal to bet amount
 		case blackjack.CompareHands(hand.Cards, game.Dealer.Cards) == 0:
 			// Push (tie)
 			if blackjack.IsBlackjack(hand.Cards) && blackjack.IsBlackjack(game.Dealer.Cards) {
@@ -119,6 +142,7 @@ func getGameResultsDescription(game *blackjack.Game, s SessionInterface, guildID
 			} else {
 				playerResult = ":beers: ¡EMPATE!"
 			}
+			netResult = 0 // No gain or loss on a push (original bet is returned)
 		}
 
 		// Get member info for display name
@@ -130,7 +154,20 @@ func getGameResultsDescription(game *blackjack.Game, s SessionInterface, guildID
 			playerName = member.User.Username
 		}
 
-		results += fmt.Sprintf("**%s**: %s (%d)\n", playerName, playerResult, playerScore)
+		// Format the net result with color
+		var netResultStr string
+		if netResult > 0 {
+			// Green for winnings
+			netResultStr = fmt.Sprintf(" **+$%d**", netResult)
+		} else if netResult < 0 {
+			// Red for losses
+			netResultStr = fmt.Sprintf(" **-$%d**", -netResult)
+		} else {
+			// Gray for push/tie
+			netResultStr = " **±$0**"
+		}
+
+		results += fmt.Sprintf("**%s**: %s (%d)%s\n", playerName, playerResult, playerScore, netResultStr)
 	}
 
 	return results
@@ -172,13 +209,25 @@ func createGameButtons(game *blackjack.Game) []discordgo.MessageComponent {
 
 // createDealerField creates the dealer's hand field
 func createDealerField(game *blackjack.Game) *discordgo.MessageEmbedField {
+	// If we're in WAITING or BETTING state, dealer has no cards yet
+	if game.State == entities.StateWaiting || game.State == entities.StateBetting || len(game.Dealer.Cards) == 0 {
+		return &discordgo.MessageEmbedField{
+			Name:   "🎩 El Dealer (Tuco)",
+			Value:  "*Tuco shuffles the deck, waiting for bets...*",
+			Inline: true,
+		}
+	}
+
 	dealerScore := blackjack.GetBestScore(game.Dealer.Cards)
 	dealerStatus := getStatusMessage(game.Dealer.Status)
 
 	var dealerValue string
-	if game.State == entities.StateComplete {
-		// Show all cards at the end of the game
+	if game.State == entities.StateComplete || game.State == entities.StateDealer {
+		// Show all cards at the end of the game or during dealer's turn
 		dealerValue = fmt.Sprintf("%s\nScore: %d%s", FormatCards(game.Dealer.Cards), dealerScore, dealerStatus)
+	} else if game.State == entities.StateDealing {
+		// During dealing, show cards being dealt with animation
+		dealerValue = fmt.Sprintf("%s\n*Tuco deals the cards with a flourish*", FormatCards(game.Dealer.Cards))
 	} else {
 		// During play, only show first card and hide the rest
 		dealerValue = fmt.Sprintf("%s 🎴\nScore: ?", FormatCard(game.Dealer.Cards[0]))
