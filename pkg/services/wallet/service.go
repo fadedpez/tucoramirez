@@ -3,6 +3,7 @@ package wallet
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -242,4 +243,36 @@ func (s *Service) RepayLoan(ctx context.Context, userID string, amount int64) er
 // GetRecentTransactions retrieves recent transactions for a user
 func (s *Service) GetRecentTransactions(ctx context.Context, userID string, limit int) ([]*entities.Transaction, error) {
 	return s.repo.GetTransactions(ctx, userID, limit)
+}
+
+// EnsureFundsWithLoan checks if a user has enough funds for a specified amount.
+// If not, it automatically gives them a loan of the specified loan amount.
+// Returns the updated wallet, whether a loan was given, and any error.
+func (s *Service) EnsureFundsWithLoan(ctx context.Context, userID string, requiredAmount int64, loanAmount int64) (*entities.Wallet, bool, error) {
+	// Get the current wallet
+	wallet, _, err := s.GetOrCreateWallet(ctx, userID)
+	if err != nil {
+		return nil, false, fmt.Errorf("error getting wallet: %w", err)
+	}
+
+	// Check if they have enough funds
+	if wallet.Balance >= requiredAmount {
+		// They have enough funds, no loan needed
+		return wallet, false, nil
+	}
+
+	// They need a loan
+	err = s.TakeLoan(ctx, userID, loanAmount)
+	if err != nil {
+		return nil, false, fmt.Errorf("error taking loan: %w", err)
+	}
+
+	// Get the updated wallet after the loan
+	updatedWallet, _, err := s.GetOrCreateWallet(ctx, userID)
+	if err != nil {
+		return nil, false, fmt.Errorf("error getting updated wallet: %w", err)
+	}
+
+	// Return the updated wallet and indicate a loan was given
+	return updatedWallet, true, nil
 }

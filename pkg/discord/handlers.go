@@ -298,8 +298,8 @@ func (b *Bot) handleStartGame(s *discordgo.Session, i *discordgo.InteractionCrea
 		log.Printf("Error updating message with betting UI: %v", err)
 		return
 	}
-
-	// Update the betting UI with current player information
+	
+	// Update the betting UI with detailed player information
 	b.updateBettingUI(s, i, game)
 
 	log.Printf("Started new game in channel %s with %d players", i.ChannelID, len(game.Players))
@@ -390,9 +390,9 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 		log.Printf("All players are done in channel %s, setting game to complete", i.ChannelID)
 
 		// Process payouts when transitioning to complete state
-		if !game.PayoutsProcessed {
-			log.Printf("Processing payouts during state transition to complete")
-			b.processPayouts(s, i, game)
+		ctx := context.Background()
+		if err := game.CompleteGameWithPayouts(ctx, b.walletService); err != nil {
+			log.Printf("Error processing payouts: %v", err)
 		}
 	}
 
@@ -899,82 +899,9 @@ func (b *Bot) handleBet(s *discordgo.Session, i *discordgo.InteractionCreate, be
 		return fmt.Errorf("player %s already placed a bet", i.Member.User.ID)
 	}
 
-	// Check wallet balance
-	wallet, isNewWallet, err := b.walletService.GetOrCreateWallet(context.Background(), i.Member.User.ID)
-	if err != nil {
-		log.Printf("Error getting wallet for player %s: %v", i.Member.User.ID, err)
-		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: "¡Problemas con el banco! *looks worried* Could not check your wallet!",
-			Flags:   discordgo.MessageFlagsEphemeral,
-		})
-		if err != nil {
-			log.Printf("Error sending followup message: %v", err)
-		}
-		return fmt.Errorf("error getting wallet: %v", err)
-	}
-
-	// If this is a new wallet, inform the player
-	if isNewWallet {
-		log.Printf("Created new wallet for player %s with starting balance of $%d", i.Member.User.ID, wallet.Balance)
-		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: fmt.Sprintf("*Tuco hands you a stack of chips* ¡Bienvenido al juego! You've been given a starting balance of $%d.", wallet.Balance),
-			Flags:   discordgo.MessageFlagsEphemeral,
-		})
-		if err != nil {
-			log.Printf("Error sending new wallet message: %v", err)
-		}
-	}
-
-	// Check if player has enough funds
-	if wallet.Balance < betAmount {
-		// Not enough funds, offer a loan of $100
-		loanAmount := int64(100)
-		
-		// Take a loan
-		err := b.walletService.TakeLoan(context.Background(), i.Member.User.ID, loanAmount)
-		if err != nil {
-			log.Printf("Error giving loan to player %s: %v", i.Member.User.ID, err)
-			_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-				Content: "¡Problemas con el banco! *looks worried* Could not arrange a loan for you!",
-				Flags:   discordgo.MessageFlagsEphemeral,
-			})
-			if err != nil {
-				log.Printf("Error sending followup message: %v", err)
-			}
-			return fmt.Errorf("error giving loan: %v", err)
-		}
-		
-		// Notify player about the loan
-		_, err = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: fmt.Sprintf("*Tuco smiles and slides some chips your way* ¡No problemo, amigo! I've given you a loan of $%d. Don't forget to pay me back... or else! *winks*", loanAmount),
-			Flags:   discordgo.MessageFlagsEphemeral,
-		})
-		if err != nil {
-			log.Printf("Error sending loan message: %v", err)
-		}
-		
-		// Check if the loan is enough
-		if wallet.Balance + loanAmount < betAmount {
-			_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-				Content: fmt.Sprintf("¡Todavía no es suficiente! *shakes head* Even with the loan, you need at least $%d to place this bet! Try a smaller bet, amigo.", betAmount),
-				Flags:   discordgo.MessageFlagsEphemeral,
-			})
-			if err != nil {
-				log.Printf("Error sending followup message: %v", err)
-			}
-			return fmt.Errorf("insufficient funds even with loan: has %d, needs %d", wallet.Balance + loanAmount, betAmount)
-		}
-		
-		// Refresh wallet after loan
-		wallet, _, err = b.walletService.GetOrCreateWallet(context.Background(), i.Member.User.ID)
-		if err != nil {
-			log.Printf("Error getting updated wallet for player %s: %v", i.Member.User.ID, err)
-			return fmt.Errorf("error getting updated wallet: %v", err)
-		}
-	}
-	
-	// Place the bet
-	err = game.PlaceBet(i.Member.User.ID, betAmount)
+	// Use the service method to place bet and update wallet
+	ctx := context.Background()
+	loanGiven, err := game.PlaceBetWithWalletUpdate(ctx, i.Member.User.ID, betAmount, b.walletService)
 	if err != nil {
 		log.Printf("Error placing bet for player %s: %v", i.Member.User.ID, err)
 		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
@@ -986,26 +913,18 @@ func (b *Bot) handleBet(s *discordgo.Session, i *discordgo.InteractionCreate, be
 		}
 		return fmt.Errorf("error placing bet: %v", err)
 	}
-	
-	// Deduct from wallet
-	err = b.walletService.RemoveFunds(
-		context.Background(),
-		i.Member.User.ID,
-		betAmount,
-		fmt.Sprintf("Blackjack bet"),
-	)
-	if err != nil {
-		log.Printf("Error updating wallet for player %s: %v", i.Member.User.ID, err)
-		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: "¡Problemas con el banco! *looks worried* Your bet was placed but your wallet couldn't be updated!",
+
+	// If a loan was given, notify the player
+	if loanGiven {
+		_, err = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: fmt.Sprintf("*Tuco smiles and slides some chips your way* ¡No problemo, amigo! I've given you a loan of $100. Don't forget to pay me back... or else! *winks*"),
 			Flags:   discordgo.MessageFlagsEphemeral,
 		})
 		if err != nil {
-			log.Printf("Error sending followup message: %v", err)
+			log.Printf("Error sending loan message: %v", err)
 		}
-		return fmt.Errorf("error updating wallet: %v", err)
 	}
-	
+
 	// Notify player of successful bet
 	_, err = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 		Content: fmt.Sprintf("*Tuco nods approvingly* ¡Buena apuesta, amigo! You bet $%d", betAmount),
@@ -1014,7 +933,7 @@ func (b *Bot) handleBet(s *discordgo.Session, i *discordgo.InteractionCreate, be
 	if err != nil {
 		log.Printf("Error sending bet confirmation: %v", err)
 	}
-	
+
 	// Check if all players have placed bets and game has transitioned to DEALING or PLAYING
 	if game.State == entities.StateDealing || game.State == entities.StatePlaying {
 		// Update the game UI with the playing state
@@ -1052,21 +971,11 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 		},
 	}
 
-	// Find the player with the highest wallet amount
-	highestBalance := int64(-1)
-	highestBalancePlayerID := ""
-	playerWallets := make(map[string]*entities.Wallet)
-
-	// First collect all player wallets
-	for _, playerID := range game.PlayerOrder {
-		wallet, _, err := b.walletService.GetOrCreateWallet(context.Background(), playerID)
-		if err == nil {
-			playerWallets[playerID] = wallet
-			if wallet.Balance > highestBalance {
-				highestBalance = wallet.Balance
-				highestBalancePlayerID = playerID
-			}
-		}
+	// Get player wallets and highest balance from the game service
+	ctx := context.Background()
+	playerWallets, highestBalance, err := game.GetPlayerWallets(ctx, b.walletService)
+	if err != nil {
+		log.Printf("Error getting player wallets: %v", err)
 	}
 
 	// Add betting status to the embed
@@ -1092,7 +1001,7 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 
 				// Add crown emoji if this player has the highest balance
 				crownEmoji := ""
-				if currentPlayerID == highestBalancePlayerID {
+				if wallet != nil && wallet.Balance == highestBalance {
 					crownEmoji = " 👑"
 				}
 
@@ -1126,7 +1035,7 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 
 			// Add crown emoji if this player has the highest balance
 			crownEmoji := ""
-			if playerID == highestBalancePlayerID {
+			if wallet != nil && wallet.Balance == highestBalance {
 				crownEmoji = " 👑"
 			}
 
@@ -1137,7 +1046,7 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 			}
 		}
 	} else {
-		// Fallback to the original logic if PlayerOrder is not initialized
+		// Fallback to using Players map if PlayerOrder is not initialized
 		for playerID := range game.Players {
 			user, err := s.User(playerID)
 			if err != nil {
@@ -1154,7 +1063,7 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 
 			// Add crown emoji if this player has the highest balance
 			crownEmoji := ""
-			if playerID == highestBalancePlayerID {
+			if wallet != nil && wallet.Balance == highestBalance {
 				crownEmoji = " 👑"
 			}
 
@@ -1178,15 +1087,14 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 
 	// Edit the original message
-	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content:    &i.Message.Content,
 		Embeds:     &[]*discordgo.MessageEmbed{embed},
 		Components: &components,
 	})
-
 	if err != nil {
-		log.Printf("Error updating betting UI: %v", err)
-		return fmt.Errorf("error updating betting UI: %v", err)
+		log.Printf("Error editing interaction response: %v", err)
+		return err
 	}
 
 	return nil
@@ -1231,7 +1139,10 @@ func (b *Bot) updateGameUI(s *discordgo.Session, i *discordgo.InteractionCreate,
 		content = "¡El juego ha terminado! *Tuco counts the chips with a grin*"
 
 		// Process payouts for all players
-		b.processPayouts(s, i, game)
+		ctx := context.Background()
+		if err := game.CompleteGameWithPayouts(ctx, b.walletService); err != nil {
+			log.Printf("Error processing payouts: %v", err)
+		}
 
 		// Recreate the embed with the updated game state
 		embed = b.displayGameState(s, i, game)
@@ -1429,18 +1340,5 @@ func (b *Bot) updateWalletMessage(s *discordgo.Session, i *discordgo.Interaction
 
 	if err != nil {
 		log.Printf("Error updating wallet message: %v", err)
-	}
-}
-
-func (b *Bot) processPayouts(s *discordgo.Session, i *discordgo.InteractionCreate, game *blackjack.Game) {
-	log.Printf("Processing payouts for game in channel %s", i.ChannelID)
-
-	// Use the service method to process payouts and update wallets
-	ctx := context.Background()
-	err := game.ProcessPayoutsWithWalletUpdates(ctx, b.walletService)
-	if err != nil {
-		log.Printf("Error processing payouts: %v", err)
-	} else {
-		log.Printf("Payouts processed and marked as complete for game in channel %s", i.ChannelID)
 	}
 }
