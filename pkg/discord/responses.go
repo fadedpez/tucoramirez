@@ -102,7 +102,7 @@ func getGameResultsDescription(game *blackjack.Game, s SessionInterface, guildID
 	}
 
 	// Calculate payouts for each player
-	payouts := game.ProcessPayouts()
+	payouts := game.CalculatePayouts()
 
 	for playerID, hand := range game.Players {
 		playerScore := blackjack.GetBestScore(hand.Cards)
