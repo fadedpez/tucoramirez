@@ -357,9 +357,12 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 				// Play dealer's turn if not all players bust
 				err = game.PlayDealer()
 			} else {
-				// All players bust, set game state to complete
-				game.State = entities.StateComplete
-				log.Printf("All players bust in channel %s, setting game to complete", i.ChannelID)
+				// All players bust, finish the game in the service layer
+				ctx := context.Background()
+				if err := game.FinishGame(ctx, b.walletService); err != nil {
+					log.Printf("Error finishing game: %v", err)
+				}
+				log.Printf("All players bust in channel %s, game finished", i.ChannelID)
 			}
 		}
 	}
@@ -385,18 +388,15 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 				log.Printf("Error playing dealer's turn: %v", err)
 			}
 		}
-		// Set game to complete state
-		game.State = entities.StateComplete
-		log.Printf("All players are done in channel %s, setting game to complete", i.ChannelID)
-
-		// Process payouts when transitioning to complete state
+		// Finish the game in the service layer
 		ctx := context.Background()
-		if err := game.CompleteGameWithPayouts(ctx, b.walletService); err != nil {
-			log.Printf("Error processing payouts: %v", err)
+		if err := game.FinishGame(ctx, b.walletService); err != nil {
+			log.Printf("Error finishing game: %v", err)
 		}
+		log.Printf("All players are done in channel %s, game finished", i.ChannelID)
 	}
 
-	// Create updated game state embed AFTER game state transitions and payout processing
+	// Create updated game state embed
 	embed := b.displayGameState(s, i, game)
 
 	// Determine which components to show based on game state
@@ -425,6 +425,15 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 
 		// Update content to show game is over
 		content = "¡El juego ha terminado! *Tuco counts the chips with a grin*"
+
+		// Process payouts for all players if they haven't been processed yet
+		if !game.PayoutsProcessed {
+			log.Printf("Processing payouts for completed game in channel %s", i.ChannelID)
+			ctx := context.Background()
+			if err := game.FinishGame(ctx, b.walletService); err != nil {
+				log.Printf("Error finishing game: %v", err)
+			}
+		}
 	} else {
 		// Game is still in progress, show hit/stand buttons
 		components = []discordgo.MessageComponent{
@@ -785,7 +794,7 @@ func (b *Bot) handleWalletCommand(s *discordgo.Session, i *discordgo.Interaction
 	}
 }
 
-func (b *Bot) displayGameState(s *discordgo.Session, i *discordgo.InteractionCreate, gameState interface{}) *discordgo.MessageEmbed {
+func (b *Bot) displayGameState(s *discordgo.Session, i *discordgo.InteractionCreate, game interface{}) *discordgo.MessageEmbed {
 	log.Printf("Displaying game state")
 	var responseType discordgo.InteractionResponseType
 	if i.Type == discordgo.InteractionApplicationCommand {
@@ -794,7 +803,7 @@ func (b *Bot) displayGameState(s *discordgo.Session, i *discordgo.InteractionCre
 		responseType = discordgo.InteractionResponseUpdateMessage
 	}
 
-	switch gameState := gameState.(type) {
+	switch gameState := game.(type) {
 	case *GameLobby:
 		embed := createLobbyEmbed(gameState)
 		components := createLobbyButtons(gameState.OwnerID)
@@ -1138,14 +1147,14 @@ func (b *Bot) updateGameUI(s *discordgo.Session, i *discordgo.InteractionCreate,
 	case entities.StateComplete:
 		content = "¡El juego ha terminado! *Tuco counts the chips with a grin*"
 
-		// Process payouts for all players
-		ctx := context.Background()
-		if err := game.CompleteGameWithPayouts(ctx, b.walletService); err != nil {
-			log.Printf("Error processing payouts: %v", err)
+		// Process payouts for all players if they haven't been processed yet
+		if !game.PayoutsProcessed {
+			log.Printf("Processing payouts for completed game in channel %s", i.ChannelID)
+			ctx := context.Background()
+			if err := game.FinishGame(ctx, b.walletService); err != nil {
+				log.Printf("Error finishing game: %v", err)
+			}
 		}
-
-		// Recreate the embed with the updated game state
-		embed = b.displayGameState(s, i, game)
 	default:
 		content = "¡Vamos a jugar! *Tuco shuffles the cards*"
 	}

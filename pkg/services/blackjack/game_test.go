@@ -272,7 +272,7 @@ func (s *GameTestSuite) TestPayoutCalculation() {
 		Times(1)
 
 	// Process payouts with wallet updates
-	err = s.game.ProcessPayoutsWithWalletUpdates(context.Background(), mockWalletService)
+	err = s.game.ProcessPayouts(context.Background(), mockWalletService)
 	s.NoError(err)
 
 	// Verify at least one game result was saved
@@ -371,7 +371,7 @@ func (s *GameTestSuite) TestPayoutCalculation_DealerWins() {
 		Times(1)
 
 	// Process payouts with wallet updates
-	err = s.game.ProcessPayoutsWithWalletUpdates(context.Background(), mockWalletService)
+	err = s.game.ProcessPayouts(context.Background(), mockWalletService)
 	s.NoError(err)
 
 	// Verify at least one game result was saved
@@ -476,7 +476,7 @@ func (s *GameTestSuite) TestPayoutCalculation_Push() {
 		Times(1)
 
 	// Process payouts with wallet updates
-	err = s.game.ProcessPayoutsWithWalletUpdates(context.Background(), mockWalletService)
+	err = s.game.ProcessPayouts(context.Background(), mockWalletService)
 	s.NoError(err)
 
 	// Verify at least one game result was saved
@@ -581,7 +581,7 @@ func (s *GameTestSuite) TestPayoutCalculation_Blackjack() {
 		Times(1)
 
 	// Process payouts with wallet updates
-	err = s.game.ProcessPayoutsWithWalletUpdates(context.Background(), mockWalletService)
+	err = s.game.ProcessPayouts(context.Background(), mockWalletService)
 	s.NoError(err)
 
 	// Verify at least one game result was saved
@@ -687,7 +687,7 @@ func (s *GameTestSuite) TestPayoutCalculation_DealerBust() {
 		Times(1)
 
 	// Process payouts with wallet updates
-	err = s.game.ProcessPayoutsWithWalletUpdates(context.Background(), mockWalletService)
+	err = s.game.ProcessPayouts(context.Background(), mockWalletService)
 	s.NoError(err)
 
 	// Verify at least one game result was saved
@@ -791,7 +791,7 @@ func (s *GameTestSuite) TestBlackjackPayout() {
 		Times(1)
 
 	// Process payouts with wallet updates
-	err = s.game.ProcessPayoutsWithWalletUpdates(context.Background(), mockWalletService)
+	err = s.game.ProcessPayouts(context.Background(), mockWalletService)
 	s.NoError(err)
 
 	// Verify at least one game result was saved
@@ -877,12 +877,22 @@ func (s *GameTestSuite) TestGameCompletionWithBust() {
 	s.NoError(err)
 	s.Equal(2, len(results))
 
+	// Check results for both players without assuming order
+	var player1Result, player2Result *HandResult
+	for i := range results {
+		if results[i].PlayerID == "player1" {
+			player1Result = &results[i]
+		} else if results[i].PlayerID == "player2" {
+			player2Result = &results[i]
+		}
+	}
+
 	// Player1 should push with dealer (both have 17)
-	s.Equal("player1", results[0].PlayerID)
-	s.Equal(ResultPush, results[0].Result)
-	s.Equal(17, results[0].Score)
+	s.NotNil(player1Result, "Player1 result should be present")
+	s.Equal(ResultPush, player1Result.Result)
+	s.Equal(17, player1Result.Score)
 
 	// Player2 should lose (bust)
-	s.Equal("player2", results[1].PlayerID)
-	s.Equal(ResultLose, results[1].Result)
+	s.NotNil(player2Result, "Player2 result should be present")
+	s.Equal(ResultLose, player2Result.Result)
 }

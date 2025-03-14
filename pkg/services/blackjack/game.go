@@ -93,10 +93,10 @@ func (g *Game) Start() error {
 		for playerID := range g.Players {
 			g.PlayerOrder = append(g.PlayerOrder, playerID)
 		}
-		
+
 		// Initialize betting turn to the first player
 		g.CurrentBettingPlayer = 0
-		
+
 		g.State = entities.StateBetting
 		return nil
 	}
@@ -494,25 +494,138 @@ func (g *Game) PlayDealer() error {
 
 	// Transition to complete state
 	g.State = entities.StateComplete
-	
+
 	return nil
 }
 
-// CompleteGameWithPayouts finalizes the game and processes payouts
-// This should be called when a game is transitioning to the complete state
-func (g *Game) CompleteGameWithPayouts(ctx context.Context, walletService WalletService) error {
+// FinishGame completes the game and processes payouts
+// This should be called after the dealer has played or all players have busted
+func (g *Game) FinishGame(ctx context.Context, walletService WalletService) error {
 	// Ensure the game is in complete state
 	if g.State != entities.StateComplete {
 		g.State = entities.StateComplete
 	}
 
-	// Process payouts if they haven't been processed yet
-	if !g.PayoutsProcessed {
-		log.Printf("Processing payouts for completed game in channel %s", g.ChannelID)
-		return g.ProcessPayoutsWithWalletUpdates(ctx, walletService)
+	// Process payouts
+	return g.ProcessPayouts(ctx, walletService)
+}
+
+// ProcessPayouts processes payouts and updates player wallets
+func (g *Game) ProcessPayouts(ctx context.Context, walletService WalletService) error {
+	log.Printf("[DEBUG] Starting payout processing for game in channel %s", g.ChannelID)
+
+	// Ensure game is in the COMPLETE state
+	if g.State != entities.StateComplete {
+		log.Printf("Cannot process payouts for game in state %s", g.State)
+		return fmt.Errorf("invalid action for current game state")
 	}
 
+	// Check if payouts have already been processed
+	if g.PayoutsProcessed {
+		log.Printf("Payouts already processed for this game, skipping")
+		return nil
+	}
+
+	log.Printf("[DEBUG] Game state: %s, Players: %d, Bets: %d", g.State, len(g.Players), len(g.Bets))
+
+	// Calculate payouts
+	payouts := g.CalculatePayouts()
+
+	// Process each player's payout
+	for playerID, payout := range payouts {
+		log.Printf("Processing payout for player %s: $%d", playerID, payout)
+
+		// Get player's current wallet
+		log.Printf("[DEBUG] Getting wallet for player %s", playerID)
+		wallet, created, err := walletService.GetOrCreateWallet(ctx, playerID)
+		if err != nil {
+			log.Printf("Error getting wallet for player %s: %v", playerID, err)
+			continue
+		}
+
+		log.Printf("Before payout: Player %s wallet balance: $%d (wallet was just created: %v)", playerID, wallet.Balance, created)
+
+		// Add winnings to wallet if there are any
+		if payout > 0 {
+			log.Printf("Adding $%d winnings to player %s wallet with description: Blackjack winnings", payout, playerID)
+			log.Printf("[DEBUG] Calling walletService.AddFunds for player %s, amount %d", playerID, payout)
+			
+			err = walletService.AddFunds(ctx, playerID, payout, "Blackjack winnings")
+			if err != nil {
+				log.Printf("Error adding winnings to player %s wallet: %v", playerID, err)
+				continue
+			}
+			log.Printf("Successfully added $%d winnings to player %s wallet", payout, playerID)
+
+			// Get updated wallet to verify
+			log.Printf("[DEBUG] Getting updated wallet for player %s after payout", playerID)
+			updatedWallet, _, err := walletService.GetOrCreateWallet(ctx, playerID)
+			if err != nil {
+				log.Printf("Error getting updated wallet for player %s: %v", playerID, err)
+			} else {
+				log.Printf("After payout: Player %s wallet balance: $%d (expected: $%d)", playerID, updatedWallet.Balance, wallet.Balance+payout)
+			}
+		} else {
+			log.Printf("Player %s has zero payout (likely lost)", playerID)
+		}
+	}
+
+	// Mark payouts as processed
+	g.PayoutsProcessed = true
+	log.Printf("Payouts processed and marked as complete")
+
 	return nil
+}
+
+// CalculatePayouts calculates the payout amounts for each player based on their results
+// This method does not update any wallets, it just calculates the payout amounts
+func (g *Game) CalculatePayouts() map[string]int64 {
+	// Calculate payouts for each player
+	payouts := make(map[string]int64)
+	
+	// Get the results
+	results, err := g.GetResults()
+	if err != nil {
+		log.Printf("Error getting results for payouts: %v", err)
+		return payouts
+	}
+
+	// Calculate payout for each player
+	for _, result := range results {
+		bet := g.Bets[result.PlayerID]
+
+		switch result.Result {
+		case ResultWin:
+			// Regular win pays 1:1 (original bet + equal amount as winnings)
+			// Since we already deducted the bet when it was placed, we need to return
+			// the original bet plus the winnings
+			payouts[result.PlayerID] = bet * 2
+		case ResultBlackjack:
+			// Blackjack pays 3:2 (original bet + 1.5x bet as winnings)
+			// Since we already deducted the bet when it was placed, we need to return
+			// the original bet plus the winnings
+			payouts[result.PlayerID] = bet + (bet * 3 / 2)
+		case ResultPush:
+			// Push returns the original bet
+			payouts[result.PlayerID] = bet
+		case ResultLose:
+			// Loss pays nothing (bet was already deducted when placed)
+			payouts[result.PlayerID] = 0
+		}
+
+		log.Printf("Player %s bet $%d, result: %s, payout: $%d",
+			result.PlayerID, bet, result.Result, payouts[result.PlayerID])
+	}
+	log.Printf("Calculated payouts: %v", payouts)
+
+	// Check if any players are missing from the payouts
+	for playerID := range g.Bets {
+		if _, exists := payouts[playerID]; !exists {
+			log.Printf("WARNING: Player %s has a bet but no payout calculated", playerID)
+		}
+	}
+
+	return payouts
 }
 
 // Result represents the outcome of a hand
@@ -630,159 +743,6 @@ func (g *Game) GetResults() ([]HandResult, error) {
 	return results, nil
 }
 
-// ProcessPayouts calculates and returns the payout amounts for each player based on their bet and result
-func (g *Game) ProcessPayouts() map[string]int64 {
-	payouts := make(map[string]int64)
-	
-	// Get the results
-	results, err := g.GetResults()
-	if err != nil {
-		log.Printf("Error getting results for payouts: %v", err)
-		return payouts
-	}
-	
-	// Calculate payout for each player
-	for _, result := range results {
-		bet := g.Bets[result.PlayerID]
-		
-		switch result.Result {
-		case ResultWin:
-			// Regular win pays 1:1 (original bet + equal amount as winnings)
-			// Since we already deducted the bet when it was placed, we need to return
-			// the original bet plus the winnings
-			payouts[result.PlayerID] = bet * 2
-		case ResultBlackjack:
-			// Blackjack pays 3:2 (original bet + 1.5x bet as winnings)
-			// Since we already deducted the bet when it was placed, we need to return
-			// the original bet plus the winnings
-			payouts[result.PlayerID] = bet + (bet * 3 / 2)
-		case ResultPush:
-			// Push returns the original bet
-			payouts[result.PlayerID] = bet
-		case ResultLose:
-			// Loss pays nothing (bet was already deducted when placed)
-			payouts[result.PlayerID] = 0
-		}
-		
-		log.Printf("Player %s bet $%d, result: %s, payout: $%d", 
-			result.PlayerID, bet, result.Result, payouts[result.PlayerID])
-	}
-	
-	return payouts
-}
-
-// ProcessPayoutsWithWalletUpdates processes payouts and updates player wallets
-func (g *Game) ProcessPayoutsWithWalletUpdates(ctx context.Context, walletService WalletService) error {
-	// Check if payouts already processed
-	if g.PayoutsProcessed {
-		log.Printf("Payouts already processed for this game, skipping")
-		return nil
-	}
-
-	// Calculate payouts
-	log.Printf("[DEBUG] Starting payout processing for game in channel %s", g.ChannelID)
-	log.Printf("[DEBUG] Game state: %v, Players: %d, Bets: %d", g.State, len(g.Players), len(g.Bets))
-	payouts := g.ProcessPayouts()
-	log.Printf("Calculated payouts: %v", payouts)
-
-	// Check if any players are missing from the payouts
-	for playerID := range g.Bets {
-		if _, exists := payouts[playerID]; !exists {
-			log.Printf("WARNING: Player %s has a bet but no payout calculated", playerID)
-		}
-	}
-
-	// Update player wallets
-	for playerID, amount := range payouts {
-		log.Printf("Processing payout for player %s: $%d", playerID, amount)
-		
-		// Get wallet balance before payout
-		log.Printf("[DEBUG] Getting wallet for player %s", playerID)
-		wallet, created, err := walletService.GetOrCreateWallet(ctx, playerID)
-		if err != nil {
-			log.Printf("Error getting wallet for player %s: %v", playerID, err)
-		} else {
-			log.Printf("Before payout: Player %s wallet balance: $%d (wallet was just created: %v)", 
-				playerID, wallet.Balance, created)
-		}
-		
-		// Add any non-zero amount to player's wallet (win, blackjack, or push)
-		if amount != 0 {
-			// Add winnings to player's wallet with the correct transaction type
-			description := fmt.Sprintf("Blackjack winnings")
-			
-			log.Printf("Adding $%d winnings to player %s wallet with description: %s", amount, playerID, description)
-			log.Printf("[DEBUG] Calling walletService.AddFunds for player %s, amount %d", playerID, amount)
-			
-			err := walletService.AddFunds(ctx, playerID, amount, description)
-			if err != nil {
-				log.Printf("Error adding winnings to player %s wallet: %v", playerID, err)
-				return err
-			} else {
-				log.Printf("Successfully added $%d winnings to player %s wallet", amount, playerID)
-				
-				// Get wallet balance after payout
-				log.Printf("[DEBUG] Getting updated wallet for player %s after payout", playerID)
-				updatedWallet, _, err := walletService.GetOrCreateWallet(ctx, playerID)
-				if err != nil {
-					log.Printf("Error getting updated wallet for player %s: %v", playerID, err)
-				} else {
-					log.Printf("After payout: Player %s wallet balance: $%d (expected: $%d)", 
-						playerID, updatedWallet.Balance, wallet.Balance + amount)
-				}
-			}
-		} else {
-			log.Printf("Player %s has zero payout (likely lost)", playerID)
-		}
-	}
-
-	// Mark payouts as processed
-	g.PayoutsProcessed = true
-	log.Printf("Payouts processed and marked as complete")
-
-	return nil
-}
-
-// WalletService defines the interface for wallet operations
-type WalletService interface {
-	GetOrCreateWallet(ctx context.Context, userID string) (*entities.Wallet, bool, error)
-	AddFunds(ctx context.Context, userID string, amount int64, description string) error
-	RemoveFunds(ctx context.Context, userID string, amount int64, description string) error
-	EnsureFundsWithLoan(ctx context.Context, userID string, requiredAmount int64, loanAmount int64) (*entities.Wallet, bool, error)
-}
-
-// GetPlayerWallets retrieves wallets for all players in the game and identifies the highest balance
-// Returns a map of player IDs to wallets and the highest balance amount
-func (g *Game) GetPlayerWallets(ctx context.Context, walletService WalletService) (map[string]*entities.Wallet, int64, error) {
-	playerWallets := make(map[string]*entities.Wallet)
-	highestBalance := int64(-1)
-
-	// Use PlayerOrder if available, otherwise use the Players map
-	playerIDs := g.PlayerOrder
-	if len(playerIDs) == 0 {
-		playerIDs = make([]string, 0, len(g.Players))
-		for playerID := range g.Players {
-			playerIDs = append(playerIDs, playerID)
-		}
-	}
-
-	// Collect all player wallets
-	for _, playerID := range playerIDs {
-		wallet, _, err := walletService.GetOrCreateWallet(ctx, playerID)
-		if err != nil {
-			log.Printf("Error getting wallet for player %s: %v", playerID, err)
-			continue
-		}
-
-		playerWallets[playerID] = wallet
-		if wallet.Balance > highestBalance {
-			highestBalance = wallet.Balance
-		}
-	}
-
-	return playerWallets, highestBalance, nil
-}
-
 // CheckPlayerDone checks if a player is no longer able to take actions
 func (g *Game) CheckPlayerDone(playerID string) bool {
 	hand, exists := g.Players[playerID]
@@ -847,4 +807,44 @@ func (g *Game) IsPlayerTurn(playerID string) bool {
 		return false
 	}
 	return playerID == currentPlayer
+}
+
+// WalletService defines the interface for wallet operations
+type WalletService interface {
+	GetOrCreateWallet(ctx context.Context, userID string) (*entities.Wallet, bool, error)
+	AddFunds(ctx context.Context, userID string, amount int64, description string) error
+	RemoveFunds(ctx context.Context, userID string, amount int64, description string) error
+	EnsureFundsWithLoan(ctx context.Context, userID string, requiredAmount int64, loanAmount int64) (*entities.Wallet, bool, error)
+}
+
+// GetPlayerWallets retrieves wallets for all players in the game and identifies the highest balance
+// Returns a map of player IDs to wallets and the highest balance amount
+func (g *Game) GetPlayerWallets(ctx context.Context, walletService WalletService) (map[string]*entities.Wallet, int64, error) {
+	playerWallets := make(map[string]*entities.Wallet)
+	highestBalance := int64(-1)
+
+	// Use PlayerOrder if available, otherwise use the Players map
+	playerIDs := g.PlayerOrder
+	if len(playerIDs) == 0 {
+		playerIDs = make([]string, 0, len(g.Players))
+		for playerID := range g.Players {
+			playerIDs = append(playerIDs, playerID)
+		}
+	}
+
+	// Collect all player wallets
+	for _, playerID := range playerIDs {
+		wallet, _, err := walletService.GetOrCreateWallet(ctx, playerID)
+		if err != nil {
+			log.Printf("Error getting wallet for player %s: %v", playerID, err)
+			continue
+		}
+
+		playerWallets[playerID] = wallet
+		if wallet.Balance > highestBalance {
+			highestBalance = wallet.Balance
+		}
+	}
+
+	return playerWallets, highestBalance, nil
 }
