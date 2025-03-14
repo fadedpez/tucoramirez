@@ -255,6 +255,63 @@ func (g *Game) PlaceBet(playerID string, amount int64) error {
 	return nil
 }
 
+// PlaceBetWithWalletUpdate places a bet for a player and updates their wallet
+// Returns whether a loan was given and any error
+func (g *Game) PlaceBetWithWalletUpdate(ctx context.Context, playerID string, betAmount int64, walletService WalletService) (bool, error) {
+	// First validate the bet using the existing PlaceBet method
+	err := g.PlaceBet(playerID, betAmount)
+	if err != nil {
+		return false, err
+	}
+
+	// Check if player has enough funds and give loan if needed
+	wallet, loanGiven, err := walletService.EnsureFundsWithLoan(
+		ctx,
+		playerID,
+		betAmount,
+		100, // Standard loan amount of $100
+	)
+	if err != nil {
+		// Revert the bet since the wallet update failed
+		delete(g.Bets, playerID)
+		// Move back to previous player's turn
+		if g.CurrentBettingPlayer > 0 {
+			g.CurrentBettingPlayer--
+		}
+		return false, fmt.Errorf("error ensuring funds: %w", err)
+	}
+
+	// Check if player has enough funds after potential loan
+	if wallet.Balance < betAmount {
+		// Revert the bet since player still doesn't have enough funds
+		delete(g.Bets, playerID)
+		// Move back to previous player's turn
+		if g.CurrentBettingPlayer > 0 {
+			g.CurrentBettingPlayer--
+		}
+		return loanGiven, fmt.Errorf("insufficient funds even after loan")
+	}
+
+	// Deduct from wallet
+	err = walletService.RemoveFunds(
+		ctx,
+		playerID,
+		betAmount,
+		fmt.Sprintf("Blackjack bet"),
+	)
+	if err != nil {
+		// Revert the bet since the wallet update failed
+		delete(g.Bets, playerID)
+		// Move back to previous player's turn
+		if g.CurrentBettingPlayer > 0 {
+			g.CurrentBettingPlayer--
+		}
+		return loanGiven, fmt.Errorf("error updating wallet: %w", err)
+	}
+
+	return loanGiven, nil
+}
+
 // CheckAllBetsPlaced returns true if all players have placed bets
 func (g *Game) CheckAllBetsPlaced() bool {
 	for playerID := range g.Players {
@@ -435,7 +492,26 @@ func (g *Game) PlayDealer() error {
 		}
 	}
 
+	// Transition to complete state
 	g.State = entities.StateComplete
+	
+	return nil
+}
+
+// CompleteGameWithPayouts finalizes the game and processes payouts
+// This should be called when a game is transitioning to the complete state
+func (g *Game) CompleteGameWithPayouts(ctx context.Context, walletService WalletService) error {
+	// Ensure the game is in complete state
+	if g.State != entities.StateComplete {
+		g.State = entities.StateComplete
+	}
+
+	// Process payouts if they haven't been processed yet
+	if !g.PayoutsProcessed {
+		log.Printf("Processing payouts for completed game in channel %s", g.ChannelID)
+		return g.ProcessPayoutsWithWalletUpdates(ctx, walletService)
+	}
+
 	return nil
 }
 
@@ -671,6 +747,40 @@ func (g *Game) ProcessPayoutsWithWalletUpdates(ctx context.Context, walletServic
 type WalletService interface {
 	GetOrCreateWallet(ctx context.Context, userID string) (*entities.Wallet, bool, error)
 	AddFunds(ctx context.Context, userID string, amount int64, description string) error
+	RemoveFunds(ctx context.Context, userID string, amount int64, description string) error
+	EnsureFundsWithLoan(ctx context.Context, userID string, requiredAmount int64, loanAmount int64) (*entities.Wallet, bool, error)
+}
+
+// GetPlayerWallets retrieves wallets for all players in the game and identifies the highest balance
+// Returns a map of player IDs to wallets and the highest balance amount
+func (g *Game) GetPlayerWallets(ctx context.Context, walletService WalletService) (map[string]*entities.Wallet, int64, error) {
+	playerWallets := make(map[string]*entities.Wallet)
+	highestBalance := int64(-1)
+
+	// Use PlayerOrder if available, otherwise use the Players map
+	playerIDs := g.PlayerOrder
+	if len(playerIDs) == 0 {
+		playerIDs = make([]string, 0, len(g.Players))
+		for playerID := range g.Players {
+			playerIDs = append(playerIDs, playerID)
+		}
+	}
+
+	// Collect all player wallets
+	for _, playerID := range playerIDs {
+		wallet, _, err := walletService.GetOrCreateWallet(ctx, playerID)
+		if err != nil {
+			log.Printf("Error getting wallet for player %s: %v", playerID, err)
+			continue
+		}
+
+		playerWallets[playerID] = wallet
+		if wallet.Balance > highestBalance {
+			highestBalance = wallet.Balance
+		}
+	}
+
+	return playerWallets, highestBalance, nil
 }
 
 // CheckPlayerDone checks if a player is no longer able to take actions

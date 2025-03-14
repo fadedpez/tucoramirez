@@ -118,11 +118,11 @@ func TestPushPayout(t *testing.T) {
 	playerID := "player1"
 	bets := map[string]int64{playerID: 100}
 	payouts := make(map[string]int64)
-	
+
 	// Simulate the push result case in ProcessPayouts
 	result := ResultPush
 	bet := bets[playerID]
-	
+
 	switch result {
 	case ResultWin:
 		payouts[playerID] = bet * 2
@@ -134,7 +134,7 @@ func TestPushPayout(t *testing.T) {
 	case ResultLose:
 		payouts[playerID] = 0
 	}
-	
+
 	// Verify the payout for push
 	if payouts[playerID] != 100 {
 		t.Errorf("ProcessPayouts switch case for push is incorrect. Expected: %d, Got: %d", 100, payouts[playerID])
@@ -149,10 +149,10 @@ func TestMultiPlayerPayouts(t *testing.T) {
 		betAmount      int64
 		expectedPayout int64
 	}{
-		{"Regular Win", ResultWin, 100, 200},             // Regular win: bet * 2
-		{"Blackjack", ResultBlackjack, 200, 500},         // Blackjack: bet + (bet * 3 / 2)
-		{"Push", ResultPush, 150, 150},                   // Push: original bet returned
-		{"Loss", ResultLose, 300, 0},                     // Loss: no payout
+		{"Regular Win", ResultWin, 100, 200},     // Regular win: bet * 2
+		{"Blackjack", ResultBlackjack, 200, 500}, // Blackjack: bet + (bet * 3 / 2)
+		{"Push", ResultPush, 150, 150},           // Push: original bet returned
+		{"Loss", ResultLose, 300, 0},             // Loss: no payout
 	}
 
 	// Test each case by directly simulating the switch case in ProcessPayouts
@@ -162,10 +162,10 @@ func TestMultiPlayerPayouts(t *testing.T) {
 			playerID := "player1"
 			bets := map[string]int64{playerID: tc.betAmount}
 			payouts := make(map[string]int64)
-			
+
 			// Simulate the result case in ProcessPayouts
 			bet := bets[playerID]
-			
+
 			switch tc.result {
 			case ResultWin:
 				payouts[playerID] = bet * 2
@@ -177,10 +177,10 @@ func TestMultiPlayerPayouts(t *testing.T) {
 			case ResultLose:
 				payouts[playerID] = 0
 			}
-			
+
 			// Verify the payout matches expected amount
 			if payouts[playerID] != tc.expectedPayout {
-				t.Errorf("ProcessPayouts for %s is incorrect. Expected: $%d, Got: $%d", 
+				t.Errorf("ProcessPayouts for %s is incorrect. Expected: $%d, Got: $%d",
 					tc.name, tc.expectedPayout, payouts[playerID])
 			}
 		})
@@ -201,10 +201,10 @@ func TestMultiPlayerPayouts(t *testing.T) {
 		"player4": ResultLose,
 	}
 	expectedPayouts := map[string]int64{
-		"player1": 200,   // Regular win: bet * 2
-		"player2": 500,   // Blackjack: bet + (bet * 3 / 2)
-		"player3": 150,   // Push: original bet returned
-		"player4": 0,     // Loss: no payout
+		"player1": 200, // Regular win: bet * 2
+		"player2": 500, // Blackjack: bet + (bet * 3 / 2)
+		"player3": 150, // Push: original bet returned
+		"player4": 0,   // Loss: no payout
 	}
 
 	// Calculate payouts for all players
@@ -212,7 +212,7 @@ func TestMultiPlayerPayouts(t *testing.T) {
 	for _, playerID := range playerIDs {
 		bet := bets[playerID]
 		result := results[playerID]
-		
+
 		switch result {
 		case ResultWin:
 			payouts[playerID] = bet * 2
@@ -234,7 +234,7 @@ func TestMultiPlayerPayouts(t *testing.T) {
 		}
 
 		if actualAmount != expectedAmount {
-			t.Errorf("Incorrect payout for player %s. Expected: $%d, Got: $%d", 
+			t.Errorf("Incorrect payout for player %s. Expected: $%d, Got: $%d",
 				playerID, expectedAmount, actualAmount)
 		}
 	}
@@ -249,7 +249,7 @@ func TestMultiPlayerPayouts(t *testing.T) {
 
 	// Verify that there are no extra players in the payouts
 	if len(payouts) != len(bets) {
-		t.Errorf("Number of payouts (%d) does not match number of bets (%d)", 
+		t.Errorf("Number of payouts (%d) does not match number of bets (%d)",
 			len(payouts), len(bets))
 	}
 }
@@ -267,6 +267,16 @@ func (m *MockWalletService) GetOrCreateWallet(ctx context.Context, userID string
 func (m *MockWalletService) AddFunds(ctx context.Context, userID string, amount int64, description string) error {
 	args := m.Called(ctx, userID, amount, description)
 	return args.Error(0)
+}
+
+func (m *MockWalletService) RemoveFunds(ctx context.Context, userID string, amount int64, description string) error {
+	args := m.Called(ctx, userID, amount, description)
+	return args.Error(0)
+}
+
+func (m *MockWalletService) EnsureFundsWithLoan(ctx context.Context, userID string, requiredAmount int64, loanAmount int64) (*entities.Wallet, bool, error) {
+	args := m.Called(ctx, userID, requiredAmount, loanAmount)
+	return args.Get(0).(*entities.Wallet), args.Bool(1), args.Error(2)
 }
 
 // MockRepository is a mock implementation of the Repository interface
@@ -355,7 +365,7 @@ func TestProcessPayoutsWithWalletUpdates(t *testing.T) {
 				{Rank: "8", Suit: "Diamonds"},
 			},
 		},
-		repo: mockRepo,
+		repo:      mockRepo,
 		ChannelID: "test-channel",
 		Deck: &entities.Deck{
 			Cards: []*entities.Card{},
