@@ -899,52 +899,26 @@ func (b *Bot) handleBet(s *discordgo.Session, i *discordgo.InteractionCreate, be
 		return fmt.Errorf("player %s already placed a bet", i.Member.User.ID)
 	}
 
-	// Check wallet balance
-	wallet, isNewWallet, err := b.walletService.GetOrCreateWallet(context.Background(), i.Member.User.ID)
+	// Check wallet balance and take a loan if needed
+	ctx := context.Background()
+	loanAmount := int64(100) // Standard loan amount
+
+	// Use the new service method to ensure the player has enough funds
+	wallet, loanTaken, err := b.walletService.EnsureFundsWithLoan(ctx, i.Member.User.ID, betAmount, loanAmount)
 	if err != nil {
-		log.Printf("Error getting wallet for player %s: %v", i.Member.User.ID, err)
+		log.Printf("Error ensuring funds for player %s: %v", i.Member.User.ID, err)
 		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: "¡Problemas con el banco! *looks worried* Could not check your wallet!",
+			Content: "¡Problemas con el banco! *looks worried* Could not check your wallet or arrange a loan!",
 			Flags:   discordgo.MessageFlagsEphemeral,
 		})
 		if err != nil {
 			log.Printf("Error sending followup message: %v", err)
 		}
-		return fmt.Errorf("error getting wallet: %v", err)
+		return fmt.Errorf("error ensuring funds: %v", err)
 	}
 
-	// If this is a new wallet, inform the player
-	if isNewWallet {
-		log.Printf("Created new wallet for player %s with starting balance of $%d", i.Member.User.ID, wallet.Balance)
-		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: fmt.Sprintf("*Tuco hands you a stack of chips* ¡Bienvenido al juego! You've been given a starting balance of $%d.", wallet.Balance),
-			Flags:   discordgo.MessageFlagsEphemeral,
-		})
-		if err != nil {
-			log.Printf("Error sending new wallet message: %v", err)
-		}
-	}
-
-	// Check if player has enough funds
-	if wallet.Balance < betAmount {
-		// Not enough funds, offer a loan of $100
-		loanAmount := int64(100)
-		
-		// Take a loan
-		err := b.walletService.TakeLoan(context.Background(), i.Member.User.ID, loanAmount)
-		if err != nil {
-			log.Printf("Error giving loan to player %s: %v", i.Member.User.ID, err)
-			_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-				Content: "¡Problemas con el banco! *looks worried* Could not arrange a loan for you!",
-				Flags:   discordgo.MessageFlagsEphemeral,
-			})
-			if err != nil {
-				log.Printf("Error sending followup message: %v", err)
-			}
-			return fmt.Errorf("error giving loan: %v", err)
-		}
-		
-		// Notify player about the loan
+	// If a loan was taken, notify the player
+	if loanTaken {
 		_, err = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 			Content: fmt.Sprintf("*Tuco smiles and slides some chips your way* ¡No problemo, amigo! I've given you a loan of $%d. Don't forget to pay me back... or else! *winks*", loanAmount),
 			Flags:   discordgo.MessageFlagsEphemeral,
@@ -952,27 +926,20 @@ func (b *Bot) handleBet(s *discordgo.Session, i *discordgo.InteractionCreate, be
 		if err != nil {
 			log.Printf("Error sending loan message: %v", err)
 		}
-		
-		// Check if the loan is enough
-		if wallet.Balance + loanAmount < betAmount {
-			_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-				Content: fmt.Sprintf("¡Todavía no es suficiente! *shakes head* Even with the loan, you need at least $%d to place this bet! Try a smaller bet, amigo.", betAmount),
-				Flags:   discordgo.MessageFlagsEphemeral,
-			})
-			if err != nil {
-				log.Printf("Error sending followup message: %v", err)
-			}
-			return fmt.Errorf("insufficient funds even with loan: has %d, needs %d", wallet.Balance + loanAmount, betAmount)
-		}
-		
-		// Refresh wallet after loan
-		wallet, _, err = b.walletService.GetOrCreateWallet(context.Background(), i.Member.User.ID)
-		if err != nil {
-			log.Printf("Error getting updated wallet for player %s: %v", i.Member.User.ID, err)
-			return fmt.Errorf("error getting updated wallet: %v", err)
-		}
 	}
-	
+
+	// Check if they have enough funds even after the loan
+	if wallet.Balance < betAmount {
+		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: fmt.Sprintf("¡Todavía no es suficiente! *shakes head* Even with the loan, you need at least $%d to place this bet! Try a smaller bet, amigo.", betAmount),
+			Flags:   discordgo.MessageFlagsEphemeral,
+		})
+		if err != nil {
+			log.Printf("Error sending followup message: %v", err)
+		}
+		return fmt.Errorf("insufficient funds even with loan: has %d, needs %d", wallet.Balance, betAmount)
+	}
+
 	// Place the bet
 	err = game.PlaceBet(i.Member.User.ID, betAmount)
 	if err != nil {

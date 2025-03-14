@@ -595,6 +595,8 @@ func (g *Game) ProcessPayoutsWithWalletUpdates(ctx context.Context, walletServic
 	}
 
 	// Calculate payouts
+	log.Printf("[DEBUG] Starting payout processing for game in channel %s", g.ChannelID)
+	log.Printf("[DEBUG] Game state: %v, Players: %d, Bets: %d", g.State, len(g.Players), len(g.Bets))
 	payouts := g.ProcessPayouts()
 	log.Printf("Calculated payouts: %v", payouts)
 
@@ -610,11 +612,13 @@ func (g *Game) ProcessPayoutsWithWalletUpdates(ctx context.Context, walletServic
 		log.Printf("Processing payout for player %s: $%d", playerID, amount)
 		
 		// Get wallet balance before payout
-		wallet, _, err := walletService.GetOrCreateWallet(ctx, playerID)
+		log.Printf("[DEBUG] Getting wallet for player %s", playerID)
+		wallet, created, err := walletService.GetOrCreateWallet(ctx, playerID)
 		if err != nil {
 			log.Printf("Error getting wallet for player %s: %v", playerID, err)
 		} else {
-			log.Printf("Before payout: Player %s wallet balance: $%d", playerID, wallet.Balance)
+			log.Printf("Before payout: Player %s wallet balance: $%d (wallet was just created: %v)", 
+				playerID, wallet.Balance, created)
 		}
 		
 		// Add any non-zero amount to player's wallet (win, blackjack, or push)
@@ -623,6 +627,7 @@ func (g *Game) ProcessPayoutsWithWalletUpdates(ctx context.Context, walletServic
 			description := fmt.Sprintf("Blackjack winnings")
 			
 			log.Printf("Adding $%d winnings to player %s wallet with description: %s", amount, playerID, description)
+			log.Printf("[DEBUG] Calling walletService.AddFunds for player %s, amount %d", playerID, amount)
 			
 			err := walletService.AddFunds(ctx, playerID, amount, description)
 			if err != nil {
@@ -632,11 +637,13 @@ func (g *Game) ProcessPayoutsWithWalletUpdates(ctx context.Context, walletServic
 				log.Printf("Successfully added $%d winnings to player %s wallet", amount, playerID)
 				
 				// Get wallet balance after payout
+				log.Printf("[DEBUG] Getting updated wallet for player %s after payout", playerID)
 				updatedWallet, _, err := walletService.GetOrCreateWallet(ctx, playerID)
 				if err != nil {
 					log.Printf("Error getting updated wallet for player %s: %v", playerID, err)
 				} else {
-					log.Printf("After payout: Player %s wallet balance: $%d", playerID, updatedWallet.Balance)
+					log.Printf("After payout: Player %s wallet balance: $%d (expected: $%d)", 
+						playerID, updatedWallet.Balance, wallet.Balance + amount)
 				}
 			}
 		} else {
