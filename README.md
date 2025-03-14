@@ -27,6 +27,7 @@ tucoramirez/
 │   │   ├── card.go      # Card, Deck structures
 │   │   ├── game.go      # Game structures
 │   │   ├── image.go     # Image structure for game images
+│   │   ├── wallet.go    # Wallet structure for currency management
 │   │   └── player.go    # Player structures
 │   │
 │   ├── repositories/ # Data persistence
@@ -37,6 +38,10 @@ tucoramirez/
 │   │   ├── player/   # Player persistence
 │   │   │   ├── interface.go
 │   │   │   └── memory.go
+│   │   ├── wallet/   # Wallet persistence
+│   │   │   ├── interface.go  # Repository interface
+│   │   │   ├── memory.go     # In-memory implementation
+│   │   │   └── sqlite.go     # SQLite implementation
 │   │   └── session/ # Game session persistence
 │   │       ├── interface.go
 │   │       └── memory.go
@@ -46,6 +51,8 @@ tucoramirez/
 │   │   ├── blackjack/  # Blackjack specific
 │   │   │   ├── rules.go    # Game rules
 │   │   │   └── service.go  # Game operations
+│   │   ├── wallet/     # Wallet service
+│   │   │   └── service.go  # Wallet operations
 │   │   └── image/     # Image service
 │   │       └── service.go  # Image operations
 │   │
@@ -64,7 +71,7 @@ tucoramirez/
 ## Architecture
 
 1. Entities Layer (Core)
-   - Pure data structures (Game, Card, Hand, Player)
+   - Pure data structures (Game, Card, Hand, Player, Wallet)
    - No business logic
    - Used across all layers
    - Defines core types and states
@@ -83,6 +90,7 @@ tucoramirez/
    - Coordinates between repositories and presentation
    - Contains blackjack rules and logic
    - Image service for game completion images
+   - Wallet service for currency management
 
 4. Discord Layer (Presentation)
    - Handles all Discord-specific logic
@@ -90,279 +98,69 @@ tucoramirez/
    - Uses service layer for game operations
    - No direct access to repositories
 
-### Entities Layer
-- Pure data structures
-- No business logic
-- Used across all layers
+## Wallet System
 
-#### Core Entities
+The bot includes a comprehensive wallet system that allows players to manage their in-game currency.
 
-1. Game Entity
+### Wallet Features
+
+- **Balance Management**: Players can view their current balance
+- **Loan System**: Players can take loans to increase their balance
+- **Repayment System**: Players can repay their loans
+- **Transaction History**: All currency movements are recorded as transactions
+
+### Wallet Entity
+
 ```go
-type Game struct {
-    ID          GameID
-    Type        GameType        // "blackjack", future: "poker", etc
-    State       GameState       // betting, dealing, playerTurn, etc
-    PlayerIDs   []PlayerID      // References to players
-    DealerID    PlayerID        // Reference to dealer
-    Deck        Deck
-    Round       int             // Current round number
-    ActiveID    PlayerID        // Current player's turn
-    Bets        map[PlayerID]int
+type Wallet struct {
+    UserID      string
+    Balance     int64
+    LoanAmount  int64
+    LastUpdated time.Time
 }
 
-type GameState string
+type Transaction struct {
+    ID           string
+    UserID       string
+    Amount       int64
+    Type         TransactionType
+    Description  string
+    Timestamp    time.Time
+    BalanceAfter int64
+}
+
+type TransactionType string
 
 const (
-    GameStateBetting    GameState = "betting"
-    GameStateDealing    GameState = "dealing"
-    GameStatePlayerTurn GameState = "playerTurn"
-    GameStateDealerTurn GameState = "dealerTurn"
-    GameStateComplete   GameState = "complete"
+    TransactionTypeLoan      TransactionType = "loan"
+    TransactionTypeRepayment TransactionType = "repayment"
+    TransactionTypeBet       TransactionType = "bet"
+    TransactionTypeWin       TransactionType = "win"
+    TransactionTypeRefund    TransactionType = "refund"
 )
 ```
 
-2. Card Entity
-```go
-type Card struct {
-    Suit  Suit
-    Rank  Rank
-    Value int
-}
+### Wallet Service
 
-type Deck struct {
-    Cards []Card
-}
-```
+The wallet service provides the following operations:
 
-3. Player Entity
-```go
-type Player struct {
-    ID      PlayerID
-    Name    string
-    Balance int
-}
+- **GetOrCreateWallet**: Retrieves a user's wallet or creates one if it doesn't exist
+- **AddFunds**: Adds funds to a user's wallet
+- **RemoveFunds**: Removes funds from a user's wallet if sufficient funds exist
+- **TakeLoan**: Adds a loan amount to the user's wallet
+- **RepayLoan**: Repays a portion of the user's loan
 
-type Hand struct {
-    Cards []Card
-    Bet   int
-}
-```
+### Integration with Games
 
-### Repository Layer
+The wallet system integrates with the blackjack game to:
 
-#### Repository Interfaces
+1. **Place Bets**: When a player starts a game, funds are removed from their wallet
+2. **Award Winnings**: When a player wins, funds are added to their wallet
+3. **Refund Bets**: In certain game scenarios, bets may be refunded to the wallet
 
-```go
-type Repository interface {
-    // Core operations
-    Create(game *entities.Game) error
-    Get(id entities.GameID) (*entities.Game, error)
-    Update(game *entities.Game) error
-    Delete(id entities.GameID) error
-    
-    // Game results
-    SaveGameResult(ctx context.Context, result *entities.GameResult) error
-    GetPlayerResults(ctx context.Context, playerID string) ([]*entities.GameResult, error)
-    GetChannelResults(ctx context.Context, channelID string, limit int) ([]*entities.GameResult, error)
-}
-```
+Players can use the `/wallet` command to view their balance and manage loans.
 
-#### SQLite Implementation
-
-The SQLite repository provides persistent storage for game data, including:
-
-- Deck state persistence
-- Game results tracking
-- Player results history
-
-```go
-func NewSQLiteRepository(dbPath string) (*SQLiteRepository, error) {
-    // Ensure directory exists
-    dbDir := filepath.Dir(dbPath)
-    if err := os.MkdirAll(dbDir, 0755); err != nil {
-        return nil, fmt.Errorf("error creating database directory: %w", err)
-    }
-
-    // Open database
-    db, err := sql.Open("sqlite3", dbPath)
-    if err != nil {
-        return nil, fmt.Errorf("error opening database: %w", err)
-    }
-
-    // Apply migrations
-    migrator := migrations.NewMigrator(db, "migrations")
-    if err := migrator.MigrateUp(); err != nil {
-        db.Close()
-        return nil, fmt.Errorf("error applying migrations: %w", err)
-    }
-
-    return &SQLiteRepository{db: db}, nil
-}
-```
-
-#### Database Migration System
-
-The bot includes a database migration system to manage schema changes:
-
-1. **Migration Files**: SQL files in the `migrations/` directory that define schema changes
-2. **Automatic Migration**: Applied when the bot starts
-3. **Migration Helper**: Command-line tool for creating and applying migrations
-
-**Creating a New Migration**:
-
-```bash
-# Create a new migration file
-go run cmd/migration/main.go create "add wallet tables"
-```
-
-This creates a numbered migration file (e.g., `002_add_wallet_tables.sql`) with SQL templates and examples.
-
-**Applying Migrations**:
-
-Migrations are automatically applied when the bot starts, but can also be applied manually:
-
-```bash
-# Apply pending migrations
-go run cmd/migration/main.go migrate
-```
-
-### Service Layer
-
-#### Game Service
-
-```go
-func (s *Service) Hit(gameID GameID, playerID PlayerID) (*GameResult, error) {
-    // Get current game state
-    game, err := s.games.Get(gameID)
-    if err != nil {
-        return nil, err
-    }
-    
-    // Check if it's the player's turn
-    if game.ActiveID != playerID {
-        return nil, ErrNotPlayerTurn
-    }
-    
-    // Deal a card to the player
-    card, err := game.Deck.Draw()
-    if err != nil {
-        return nil, err
-    }
-    
-    // Add card to player's hand
-    player := game.GetPlayer(playerID)
-    player.Hand.AddCard(card)
-    
-    // Check if player busts
-    if player.Hand.Value() > 21 {
-        // End player's turn
-        game.NextPlayer()
-    }
-    
-    // Update game state
-    if err := s.games.Update(game); err != nil {
-        return nil, err
-    }
-    
-    return &GameResult{
-        Game:   game,
-        Status: "hit",
-    }, nil
-}
-```
-
-#### Image Service
-
-The image service provides random images to display when a game completes:
-
-```go
-// GetRandomImage returns a random image from the collection
-func (s *Service) GetRandomImage() *entities.Image {
-    if len(s.images) == 0 {
-        return &entities.Image{URL: ""} // Return empty image if none available
-    }
-    
-    randomIndex := s.rng.Intn(len(s.images))
-    return s.images[randomIndex]
-}
-```
-
-### Game State Architecture
-
-The project uses a flexible architecture for handling game states and results across different game types:
-
-#### Generic Game States
-
-Defined in `entities/gamestate.go`, these are game-agnostic states and results:
-
-```go
-// Game state types
-type GameState string
-
-const (
-    StateWaiting  GameState = "WAITING"
-    StateDealing  GameState = "DEALING"
-    StatePlaying  GameState = "PLAYING"
-    StateDealer   GameState = "DEALER"
-    StateComplete GameState = "COMPLETE"
-)
-
-// Base result types
-type Result string
-
-const (
-    ResultWin  Result = "WIN"
-    ResultLose Result = "LOSE"
-    ResultPush Result = "PUSH"
-)
-```
-
-#### GameDetails Interface
-
-This interface allows for game-specific details while maintaining a consistent framework:
-
-```go
-// GameDetails defines what game-specific result details must provide
-type GameDetails interface {
-    // GameType returns the type of game (ex blackjack or poker)
-    GameType() GameState
-    // ValidateDetails ensures the details are valid for the game
-    ValidateDetails() error
-}
-```
-
-#### Game-Specific Implementations
-
-Each game implements its own version of GameDetails:
-
-```go
-// BlackjackDetails contains game-specific result details
-type BlackjackDetails struct {
-    DealerScore int
-    IsBlackjack bool
-    IsBust      bool
-}
-
-func (d *BlackjackDetails) GameType() entities.GameState {
-    return entities.StateDealing // will be updated to a game type constant
-}
-
-func (d *BlackjackDetails) ValidateDetails() error {
-    if d.DealerScore < 0 || d.DealerScore > 31 {
-        return errors.New("invalid dealer score")
-    }
-    return nil
-}
-```
-
-This architecture allows us to:
-1. Handle multiple card games with a consistent state framework
-2. Capture game-specific details and rules
-3. Process results uniformly at the repository level
-4. Add new games without modifying core game state logic
-
-### Gameplay Features
+## Gameplay Features
 
 ### Blackjack
 
@@ -432,32 +230,6 @@ func NewBot(token string, repository game.Repository) (*Bot, error) {
     return bot, nil
 }
 ```
-
-## Implementation Order
-
-The project follows this implementation order:
-
-1. **Repository Layer** (Current)
-   - SQLite implementation for persistent storage
-   - Migration system for schema evolution
-
-2. **Wallet System** (Next)
-   - Currency tracking per player
-   - Add/remove funds operations
-
-3. **Loan System**
-   - Track loans as positive integers
-   - Display as negative balances
-
-4. **Betting System**
-   - Initial ante betting
-   - Win/loss payouts
-   - Special bets (double down, split, insurance)
-
-5. **Advanced Game Features**
-   - Split hands
-   - Insurance bets
-   - Multiple concurrent games
 
 ## Development
 
