@@ -231,6 +231,64 @@ func NewBot(token string, repository game.Repository) (*Bot, error) {
 }
 ```
 
+## Recent Refactoring (March 2025)
+
+### Wallet Integration with Blackjack Payouts
+
+We recently refactored the payout system in the Blackjack game to improve the separation of concerns between the service layer and the Discord handler layer.
+
+#### Changes Made
+
+1. **Service Layer Responsibility**
+   - Moved wallet management logic from the Discord handler to the game service layer
+   - Created a `GetPlayerWallets` method in the Game struct to encapsulate wallet collection logic
+   - Added a `CompleteGameWithPayouts` method to handle game completion and payout processing in one place
+
+2. **Improved Separation of Concerns**
+   - Discord handlers now only call service methods and display results
+   - All wallet operations (checking balances, processing payouts) happen in the service layer
+   - Removed direct wallet manipulation from the Discord layer
+
+3. **Test Improvements**
+   - Fixed the `MockWalletService` implementation by adding missing methods
+   - Re-enabled previously disabled tests for payout processing
+
+#### Architecture Decisions
+
+The refactoring follows these key principles:
+
+1. **Clean Separation**
+   - Game logic (including payouts) belongs in the service layer
+   - Discord layer only handles UI and user interaction
+
+2. **Minimal Changes**
+   - Made targeted changes only where needed
+   - Preserved existing code structure and patterns
+
+3. **Automatic Payout Processing**
+   - Payouts are now processed automatically when a game transitions to the complete state
+   - This ensures consistent behavior regardless of how the game ends
+
+```go
+// Example of the new CompleteGameWithPayouts method
+func (g *Game) CompleteGameWithPayouts(ctx context.Context, walletService WalletService) error {
+    // Ensure the game is in complete state
+    if g.State != entities.StateComplete {
+        g.State = entities.StateComplete
+    }
+
+    // Process payouts if they haven't been processed yet
+    if !g.PayoutsProcessed {
+        log.Printf("Processing payouts for completed game in channel %s", g.ChannelID)
+        return g.ProcessPayoutsWithWalletUpdates(ctx, walletService)
+    }
+
+    return nil
+}
+```
+
+This approach ensures that the game service maintains full control over the game state and payout processing, while the Discord layer focuses solely on user interaction and display.
+
 ## Development
 
 ### Setup
