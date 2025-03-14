@@ -298,8 +298,8 @@ func (b *Bot) handleStartGame(s *discordgo.Session, i *discordgo.InteractionCrea
 		log.Printf("Error updating message with betting UI: %v", err)
 		return
 	}
-
-	// Update the betting UI with current player information
+	
+	// Update the betting UI with detailed player information
 	b.updateBettingUI(s, i, game)
 
 	log.Printf("Started new game in channel %s with %d players", i.ChannelID, len(game.Players))
@@ -1104,7 +1104,7 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 			}
 		}
 	} else {
-		// Fallback to the original logic if PlayerOrder is not initialized
+		// Fallback to using Players map if PlayerOrder is not initialized
 		for playerID := range game.Players {
 			user, err := s.User(playerID)
 			if err != nil {

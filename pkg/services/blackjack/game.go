@@ -88,6 +88,15 @@ func (g *Game) Start() error {
 
 	// If we're in WAITING state and not in BETTING, transition to BETTING first
 	if g.State == entities.StateWaiting {
+		// Set up player order for betting
+		g.PlayerOrder = make([]string, 0, len(g.Players))
+		for playerID := range g.Players {
+			g.PlayerOrder = append(g.PlayerOrder, playerID)
+		}
+		
+		// Initialize betting turn to the first player
+		g.CurrentBettingPlayer = 0
+		
 		g.State = entities.StateBetting
 		return nil
 	}
