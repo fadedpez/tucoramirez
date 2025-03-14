@@ -6,9 +6,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/joho/godotenv"
 	"github.com/fadedpez/tucoramirez/pkg/discord"
 	"github.com/fadedpez/tucoramirez/pkg/repositories/game"
+	walletRepo "github.com/fadedpez/tucoramirez/pkg/repositories/wallet"
+	walletService "github.com/fadedpez/tucoramirez/pkg/services/wallet"
+	"github.com/joho/godotenv"
 )
 
 func main() {
@@ -26,10 +28,10 @@ func main() {
 
 	// Initialize repository
 	var gameRepo game.Repository
-	
+
 	// You can use an environment variable to choose the repository type
 	storageType := os.Getenv("STORAGE_TYPE") // Add this to your .env file
-	
+
 	if storageType == "sqlite" {
 		// Ensure data directory exists
 		dataDir := "./data"
@@ -37,7 +39,7 @@ func main() {
 		if err := os.MkdirAll(dataDir, 0755); err != nil {
 			log.Fatalf("Failed to create data directory: %v", err)
 		}
-		
+
 		dbPath := dataDir + "/tucoramirez.db"
 		log.Printf("Initializing SQLite repository at %s", dbPath)
 		sqliteRepo, err := game.NewSQLiteRepository(dbPath)
@@ -56,7 +58,10 @@ func main() {
 	}
 
 	// Create new bot instance with repository
-	bot, err := discord.NewBot(token, gameRepo)
+	// Initialize wallet repository (in-memory for now)
+	walletRepository := walletRepo.NewMemoryRepository()
+	wService := walletService.NewService(walletRepository)
+	bot, err := discord.NewBot(token, gameRepo, wService)
 	if err != nil {
 		log.Fatalf("Error creating bot: %v", err)
 	}

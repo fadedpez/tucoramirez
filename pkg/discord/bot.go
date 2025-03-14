@@ -10,6 +10,7 @@ import (
 	"github.com/fadedpez/tucoramirez/pkg/repositories/game"
 	"github.com/fadedpez/tucoramirez/pkg/services/blackjack"
 	"github.com/fadedpez/tucoramirez/pkg/services/image"
+	"github.com/fadedpez/tucoramirez/pkg/services/wallet"
 )
 
 type GameLobby struct {
@@ -34,13 +35,19 @@ type Bot struct {
 	imageService *image.Service
 
 	// Interaction tracking to prevent duplicates
-	interactionMu        sync.RWMutex
+	interactionMu         sync.RWMutex
 	processedInteractions map[string]bool
-	lastCleanupTime      time.Time
+	lastCleanupTime       time.Time
+
+	// Wallet service
+	walletService *wallet.Service
+
+	// Channel to signal when the bot is ready
+	readyChan chan struct{}
 }
 
 // NewBot creates a new instance of the bot
-func NewBot(token string, repository game.Repository) (*Bot, error) {
+func NewBot(token string, repository game.Repository, walletService *wallet.Service) (*Bot, error) {
 	session, err := discordgo.New("Bot " + token)
 	if err != nil {
 		return nil, fmt.Errorf("error creating Discord session: %w", err)
@@ -53,14 +60,16 @@ func NewBot(token string, repository game.Repository) (*Bot, error) {
 	}
 
 	bot := &Bot{
-		session:      session,
-		token:        token,
-		games:        make(map[string]*blackjack.Game),
-		lobbies:      make(map[string]*GameLobby),
-		repo:         repository,
-		imageService: imageService,
+		session:               session,
+		token:                 token,
+		games:                 make(map[string]*blackjack.Game),
+		lobbies:               make(map[string]*GameLobby),
+		repo:                  repository,
+		imageService:          imageService,
 		processedInteractions: make(map[string]bool),
-		lastCleanupTime: time.Now(),
+		lastCleanupTime:       time.Now(),
+		walletService:         walletService,
+		readyChan:             make(chan struct{}),
 	}
 
 	// Register handlers
@@ -86,15 +95,6 @@ func (b *Bot) Start() error {
 	err := b.session.Open()
 	if err != nil {
 		return fmt.Errorf("error opening connection: %w", err)
-	}
-
-	// Register slash commands
-	_, err = b.session.ApplicationCommandCreate(b.session.State.User.ID, "", &discordgo.ApplicationCommand{
-		Name:        "blackjack",
-		Description: "Start a new game of blackjack!",
-	})
-	if err != nil {
-		return fmt.Errorf("error creating command: %w", err)
 	}
 
 	return nil
