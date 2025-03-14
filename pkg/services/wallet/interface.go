@@ -10,4 +10,6 @@ import (
 type WalletService interface {
 	GetOrCreateWallet(ctx context.Context, userID string) (*entities.Wallet, bool, error)
 	AddFunds(ctx context.Context, userID string, amount int64, description string) error
+	RemoveFunds(ctx context.Context, userID string, amount int64, description string) error
+	EnsureFundsWithLoan(ctx context.Context, userID string, requiredAmount int64, loanAmount int64) (*entities.Wallet, bool, error)
 }

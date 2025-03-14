@@ -53,6 +53,22 @@ func (mr *MockWalletServiceMockRecorder) AddFunds(ctx, userID, amount, descripti
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddFunds", reflect.TypeOf((*MockWalletService)(nil).AddFunds), ctx, userID, amount, description)
 }
 
+// EnsureFundsWithLoan mocks base method.
+func (m *MockWalletService) EnsureFundsWithLoan(ctx context.Context, userID string, requiredAmount, loanAmount int64) (*entities.Wallet, bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "EnsureFundsWithLoan", ctx, userID, requiredAmount, loanAmount)
+	ret0, _ := ret[0].(*entities.Wallet)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
+// EnsureFundsWithLoan indicates an expected call of EnsureFundsWithLoan.
+func (mr *MockWalletServiceMockRecorder) EnsureFundsWithLoan(ctx, userID, requiredAmount, loanAmount any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EnsureFundsWithLoan", reflect.TypeOf((*MockWalletService)(nil).EnsureFundsWithLoan), ctx, userID, requiredAmount, loanAmount)
+}
+
 // GetOrCreateWallet mocks base method.
 func (m *MockWalletService) GetOrCreateWallet(ctx context.Context, userID string) (*entities.Wallet, bool, error) {
 	m.ctrl.T.Helper()
@@ -67,4 +83,18 @@ func (m *MockWalletService) GetOrCreateWallet(ctx context.Context, userID string
 func (mr *MockWalletServiceMockRecorder) GetOrCreateWallet(ctx, userID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetOrCreateWallet", reflect.TypeOf((*MockWalletService)(nil).GetOrCreateWallet), ctx, userID)
+}
+
+// RemoveFunds mocks base method.
+func (m *MockWalletService) RemoveFunds(ctx context.Context, userID string, amount int64, description string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RemoveFunds", ctx, userID, amount, description)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RemoveFunds indicates an expected call of RemoveFunds.
+func (mr *MockWalletServiceMockRecorder) RemoveFunds(ctx, userID, amount, description any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveFunds", reflect.TypeOf((*MockWalletService)(nil).RemoveFunds), ctx, userID, amount, description)
 }
