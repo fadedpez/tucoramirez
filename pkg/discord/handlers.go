@@ -1021,7 +1021,6 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 
 	// Find the player with the highest wallet amount
 	highestBalance := int64(-1)
-	highestBalancePlayerID := ""
 	playerWallets := make(map[string]*entities.Wallet)
 
 	// First collect all player wallets
@@ -1031,7 +1030,6 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 			playerWallets[playerID] = wallet
 			if wallet.Balance > highestBalance {
 				highestBalance = wallet.Balance
-				highestBalancePlayerID = playerID
 			}
 		}
 	}
@@ -1059,7 +1057,7 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 
 				// Add crown emoji if this player has the highest balance
 				crownEmoji := ""
-				if currentPlayerID == highestBalancePlayerID {
+				if wallet != nil && wallet.Balance == highestBalance {
 					crownEmoji = " 👑"
 				}
 
@@ -1093,7 +1091,7 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 
 			// Add crown emoji if this player has the highest balance
 			crownEmoji := ""
-			if playerID == highestBalancePlayerID {
+			if wallet != nil && wallet.Balance == highestBalance {
 				crownEmoji = " 👑"
 			}
 
@@ -1121,7 +1119,7 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 
 			// Add crown emoji if this player has the highest balance
 			crownEmoji := ""
-			if playerID == highestBalancePlayerID {
+			if wallet != nil && wallet.Balance == highestBalance {
 				crownEmoji = " 👑"
 			}
 
