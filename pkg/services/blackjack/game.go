@@ -186,44 +186,38 @@ func (g *Game) StartBetting() error {
 	return nil
 }
 
+// ValidateBet checks if a player can place a bet
+func (g *Game) ValidateBet(playerID string) error {
+    // Check if game is in betting state
+    if g.State != entities.StateBetting {
+        return errors.New("game not in betting state")
+    }
+    
+    // Check if player is in the game
+    if _, exists := g.Players[playerID]; !exists {
+        return ErrPlayerNotFound
+    }
+    
+    // Check if it's this player's turn to bet
+    if len(g.PlayerOrder) > 0 && g.CurrentBettingPlayer < len(g.PlayerOrder) {
+        currentPlayerID := g.PlayerOrder[g.CurrentBettingPlayer]
+        if currentPlayerID != playerID {
+            return errors.New("not player's turn to bet")
+        }
+    }
+    
+    // Check if player has already bet
+    if _, hasBet := g.Bets[playerID]; hasBet {
+        return errors.New("player already placed a bet")
+    }
+    
+    return nil
+}
+
 // PlaceBet places a bet for a player
 func (g *Game) PlaceBet(playerID string, amount int64) error {
-	if g.State != entities.StateBetting {
-		return ErrInvalidAction
-	}
-
-	// Check if player exists
-	_, exists := g.Players[playerID]
-	if !exists {
-		return ErrPlayerNotFound
-	}
-
-	// Check if it's this player's turn to bet
-	// Only enforce turn order if PlayerOrder is initialized and has elements
-	if len(g.PlayerOrder) > 0 {
-		// Make sure CurrentBettingPlayer is within bounds
-		if g.CurrentBettingPlayer >= len(g.PlayerOrder) {
-			g.CurrentBettingPlayer = 0 // Reset to first player if out of bounds
-		}
-
-		// Check if it's this player's turn
-		if g.PlayerOrder[g.CurrentBettingPlayer] != playerID {
-			return errors.New("not your turn to bet")
-		}
-	} else {
-		// If PlayerOrder is not initialized, initialize it now
-		g.PlayerOrder = make([]string, 0, len(g.Players))
-		for pid := range g.Players {
-			g.PlayerOrder = append(g.PlayerOrder, pid)
-		}
-
-		// Find this player's position in the order
-		for i, pid := range g.PlayerOrder {
-			if pid == playerID {
-				g.CurrentBettingPlayer = i
-				break
-			}
-		}
+	if err := g.ValidateBet(playerID); err != nil {
+		return err
 	}
 
 	// Store bet amount
@@ -487,8 +481,14 @@ func (g *Game) PlayDealer() error {
 			g.shuffled = true
 			card = g.Deck.Draw()
 		}
-		if err := g.Dealer.AddCard(card); err != nil {
+		err := g.Dealer.AddCard(card)
+		// Handle bust as a valid game state, not an error
+		if err != nil && err != ErrHandBust {
 			return err
+		}
+		// If dealer busts, break out of the loop
+		if err == ErrHandBust {
+			break
 		}
 	}
 
@@ -809,6 +809,11 @@ func (g *Game) IsPlayerTurn(playerID string) bool {
 	return playerID == currentPlayer
 }
 
+// IsGameComplete returns true if the game is in a completed state
+func (g *Game) IsGameComplete() bool {
+    return g.State == entities.StateComplete || g.CheckAllPlayersDone()
+}
+
 // WalletService defines the interface for wallet operations
 type WalletService interface {
 	GetOrCreateWallet(ctx context.Context, userID string) (*entities.Wallet, bool, error)
@@ -847,4 +852,34 @@ func (g *Game) GetPlayerWallets(ctx context.Context, walletService WalletService
 	}
 
 	return playerWallets, highestBalance, nil
+}
+
+// CompleteGameIfDone checks if the game is complete, plays the dealer if needed,
+// processes payouts, and returns whether the game is complete
+func (g *Game) CompleteGameIfDone(ctx context.Context, walletService WalletService) (bool, error) {
+    // If game is already complete, just return true
+    if g.State == entities.StateComplete {
+        return true, nil
+    }
+    
+    // Check if all players are done
+    if !g.CheckAllPlayersDone() {
+        return false, nil
+    }
+    
+    // If not all players bust, play dealer's turn
+    if !g.CheckAllPlayersBust() {
+        if err := g.PlayDealer(); err != nil {
+            return false, fmt.Errorf("error playing dealer's turn: %w", err)
+        }
+    }
+    
+    // Finish the game and process payouts if not already processed
+    if !g.PayoutsProcessed {
+        if err := g.FinishGame(ctx, walletService); err != nil {
+            return true, fmt.Errorf("error finishing game: %w", err)
+        }
+    }
+    
+    return true, nil
 }
