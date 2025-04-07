@@ -350,21 +350,6 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 		}
 	case "stand":
 		err = game.Stand(i.Member.User.ID)
-
-		// After stand, check if all players are done and play dealer if needed
-		if err == nil && game.CheckAllPlayersDone() {
-			if !game.CheckAllPlayersBust() {
-				// Play dealer's turn if not all players bust
-				err = game.PlayDealer()
-			} else {
-				// All players bust, finish the game in the service layer
-				ctx := context.Background()
-				if err := game.FinishGame(ctx, b.walletService); err != nil {
-					log.Printf("Error finishing game: %v", err)
-				}
-				log.Printf("All players bust in channel %s, game finished", i.ChannelID)
-			}
-		}
 	}
 
 	// Only treat non-bust errors as actual errors
@@ -379,21 +364,11 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 		return
 	}
 
-	// Check if all players are done, and if so, make sure game state is complete
-	if game.CheckAllPlayersDone() && game.State != entities.StateComplete {
-		// If not all players bust, play dealer's turn
-		if !game.CheckAllPlayersBust() {
-			// Play dealer's turn
-			if err := game.PlayDealer(); err != nil {
-				log.Printf("Error playing dealer's turn: %v", err)
-			}
-		}
-		// Finish the game in the service layer
-		ctx := context.Background()
-		if err := game.FinishGame(ctx, b.walletService); err != nil {
-			log.Printf("Error finishing game: %v", err)
-		}
-		log.Printf("All players are done in channel %s, game finished", i.ChannelID)
+	// Use the service method to check if game is complete and handle dealer play/payouts
+	ctx := context.Background()
+	gameComplete, err := game.CompleteGameIfDone(ctx, b.walletService)
+	if err != nil {
+		log.Printf("Error completing game: %v", err)
 	}
 
 	// Create updated game state embed
@@ -401,15 +376,10 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 
 	// Determine which components to show based on game state
 	var components []discordgo.MessageComponent
-
-	// Check if the game is over
-	gameOver := game.State == entities.StateComplete || game.CheckAllPlayersDone()
-
-	// Define content variable
 	var content string
 
 	// If the game is over, show play again button
-	if gameOver {
+	if gameComplete {
 		// Game is over, show play again button
 		components = []discordgo.MessageComponent{
 			discordgo.ActionsRow{
@@ -425,15 +395,6 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 
 		// Update content to show game is over
 		content = "¡El juego ha terminado! *Tuco counts the chips with a grin*"
-
-		// Process payouts for all players if they haven't been processed yet
-		if !game.PayoutsProcessed {
-			log.Printf("Processing payouts for completed game in channel %s", i.ChannelID)
-			ctx := context.Background()
-			if err := game.FinishGame(ctx, b.walletService); err != nil {
-				log.Printf("Error finishing game: %v", err)
-			}
-		}
 	} else {
 		// Game is still in progress, show hit/stand buttons
 		components = []discordgo.MessageComponent{
@@ -458,18 +419,19 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 
 	// Update the message
-	_, err = s.FollowupMessageEdit(i.Interaction, i.Message.ID, &discordgo.WebhookEdit{
+	var err2 error
+	_, err2 = s.FollowupMessageEdit(i.Interaction, i.Message.ID, &discordgo.WebhookEdit{
 		Content:    &content,
 		Embeds:     &[]*discordgo.MessageEmbed{embed},
 		Components: &components,
 	})
-	if err != nil {
-		log.Printf("Error updating message with game state: %v", err)
+	if err2 != nil {
+		log.Printf("Error updating message with game state: %v", err2)
 		return
 	}
 
 	// If the game is over, clean up
-	if gameOver {
+	if gameComplete {
 		// Send a game completion image if available
 		if b.imageService != nil {
 			image := b.imageService.GetRandomImage()
@@ -856,56 +818,16 @@ func (b *Bot) handleBet(s *discordgo.Session, i *discordgo.InteractionCreate, be
 		return fmt.Errorf("no game found in channel %s", i.ChannelID)
 	}
 
-	// Check if the game is in betting state
-	if game.State != entities.StateBetting {
+	// Use the service method to validate the bet
+	if err := game.ValidateBet(i.Member.User.ID); err != nil {
 		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: "¡No es el momento! *taps watch* The betting phase is over!",
+			Content: fmt.Sprintf("¡No es posible! *shakes head* %v", err),
 			Flags:   discordgo.MessageFlagsEphemeral,
 		})
 		if err != nil {
 			log.Printf("Error sending followup message: %v", err)
 		}
-		return fmt.Errorf("game not in betting state")
-	}
-
-	// Check if player is in the game
-	_, exists = game.Players[i.Member.User.ID]
-	if !exists {
-		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: "¡Oye! *looks puzzled* You're not in this game, amigo!",
-			Flags:   discordgo.MessageFlagsEphemeral,
-		})
-		if err != nil {
-			log.Printf("Error sending followup message: %v", err)
-		}
-		return fmt.Errorf("player %s not in game", i.Member.User.ID)
-	}
-
-	// Check if it's this player's turn to bet
-	if len(game.PlayerOrder) > 0 && game.CurrentBettingPlayer < len(game.PlayerOrder) {
-		currentPlayerID := game.PlayerOrder[game.CurrentBettingPlayer]
-		if currentPlayerID != i.Member.User.ID {
-			_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-				Content: "¡Espera tu turno, amigo! *taps foot impatiently* It's not your turn to bet yet!",
-				Flags:   discordgo.MessageFlagsEphemeral,
-			})
-			if err != nil {
-				log.Printf("Error sending followup message: %v", err)
-			}
-			return fmt.Errorf("not player's turn to bet")
-		}
-	}
-
-	// Check if player has already bet
-	if _, hasBet := game.Bets[i.Member.User.ID]; hasBet {
-		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: "¡Una vez es suficiente! *wags finger* You've already placed your bet!",
-			Flags:   discordgo.MessageFlagsEphemeral,
-		})
-		if err != nil {
-			log.Printf("Error sending followup message: %v", err)
-		}
-		return fmt.Errorf("player %s already placed a bet", i.Member.User.ID)
+		return fmt.Errorf("bet validation failed: %w", err)
 	}
 
 	// Use the service method to place bet and update wallet
@@ -1096,14 +1018,15 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 	}
 
 	// Edit the original message
-	_, err = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+	var err2 error
+	_, err2 = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content:    &i.Message.Content,
 		Embeds:     &[]*discordgo.MessageEmbed{embed},
 		Components: &components,
 	})
-	if err != nil {
-		log.Printf("Error editing interaction response: %v", err)
-		return err
+	if err2 != nil {
+		log.Printf("Error editing interaction response: %v", err2)
+		return err2
 	}
 
 	return nil
@@ -1160,14 +1083,15 @@ func (b *Bot) updateGameUI(s *discordgo.Session, i *discordgo.InteractionCreate,
 	}
 
 	// Edit the original message
-	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+	var err2 error
+	_, err2 = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content:    &content,
 		Embeds:     &[]*discordgo.MessageEmbed{embed},
 		Components: &components,
 	})
-	if err != nil {
-		log.Printf("Error updating game UI: %v", err)
-		return fmt.Errorf("error updating game UI: %v", err)
+	if err2 != nil {
+		log.Printf("Error updating game UI: %v", err2)
+		return fmt.Errorf("error updating game UI: %v", err2)
 	}
 
 	return nil
@@ -1341,13 +1265,14 @@ func (b *Bot) updateWalletMessage(s *discordgo.Session, i *discordgo.Interaction
 	}
 
 	// Edit the interaction response
-	_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+	var err2 error
+	_, err2 = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
 		Content:    &i.Message.Content,
 		Embeds:     &[]*discordgo.MessageEmbed{embed},
 		Components: &components,
 	})
 
-	if err != nil {
-		log.Printf("Error updating wallet message: %v", err)
+	if err2 != nil {
+		log.Printf("Error updating wallet message: %v", err2)
 	}
 }
