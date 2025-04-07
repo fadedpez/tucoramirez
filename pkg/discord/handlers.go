@@ -805,6 +805,16 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 		log.Printf("Error getting player information: %v", err)
 	}
 
+	// Find the player with the highest balance
+	var highestBalance int64
+	var richestPlayerID string
+	for _, playerInfo := range playersInfo {
+		if playerInfo.WalletBalance > highestBalance {
+			highestBalance = playerInfo.WalletBalance
+			richestPlayerID = playerInfo.PlayerID
+		}
+	}
+
 	// Get current betting player info
 	currentPlayerInfo, err := game.GetCurrentBettingPlayerInfo(ctx, b.walletService)
 	if err != nil {
@@ -841,6 +851,11 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 		fieldName := user.Username
 		if playerInfo.IsCurrentTurn {
 			fieldName += " 👈 YOUR TURN"
+		}
+
+		// Add crown emoji to player with highest balance
+		if playerInfo.PlayerID == richestPlayerID && highestBalance > 0 {
+			fieldName += " 👑"
 		}
 
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
