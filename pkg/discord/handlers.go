@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -101,6 +103,9 @@ func (b *Bot) handleInteractions(s *discordgo.Session, i *discordgo.InteractionC
 }
 
 func (b *Bot) handleMessageComponentInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	log.Printf("Handling component interaction: %s for user %s",
+		i.MessageComponentData().CustomID, i.Member.User.ID)
+
 	// Acknowledge the interaction immediately
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredMessageUpdate,
@@ -111,39 +116,43 @@ func (b *Bot) handleMessageComponentInteraction(s *discordgo.Session, i *discord
 	}
 
 	// Handle different component types
-	switch i.MessageComponentData().CustomID {
-	case "join_game":
+	customID := i.MessageComponentData().CustomID
+	switch {
+	case customID == "join_game":
 		b.handleJoinGame(s, i)
 
-	case "start_game":
+	case customID == "start_game":
 		b.handleStartGame(s, i)
 
-	case "hit", "stand":
+	case customID == "hit" || customID == "stand":
 		b.handleGameAction(s, i)
 
-	case "play_again":
+	case customID == "play_again":
 		b.handlePlayAgain(s, i)
 
-	case "wallet_loan":
+	case customID == "wallet_loan":
 		b.handleWalletLoan(s, i)
 
-	case "wallet_repay":
+	case customID == "wallet_repay":
 		b.handleWalletRepayment(s, i)
 
-	case "bet_5", "bet_10", "bet_25":
-		betAmount := int64(0)
-		switch i.MessageComponentData().CustomID {
-		case "bet_5":
-			betAmount = 5
-		case "bet_10":
-			betAmount = 10
-		case "bet_25":
-			betAmount = 25
+	case strings.HasPrefix(customID, "bet_"):
+		betAmount, err := strconv.ParseInt(strings.TrimPrefix(customID, "bet_"), 10, 64)
+		if err != nil {
+			log.Printf("Error parsing bet amount: %v", err)
+			_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+				Content: "*Tuco looks confused* ¿Qué? I don't understand that command.",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			})
+			if err != nil {
+				log.Printf("Error sending followup message: %v", err)
+			}
+			return
 		}
 		b.handleBet(s, i, betAmount)
 
 	default:
-		log.Printf("Unknown component ID: %s", i.MessageComponentData().CustomID)
+		log.Printf("Unknown component ID: %s", customID)
 		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 			Content: "*Tuco looks confused* ¿Qué? I don't understand that command.",
 			Flags:   discordgo.MessageFlagsEphemeral,
@@ -207,7 +216,7 @@ func (b *Bot) handleJoinGame(s *discordgo.Session, i *discordgo.InteractionCreat
 }
 
 func (b *Bot) handleStartGame(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Check if there's already a lobby in this channel
+	// Check if there's already a lobby in this channel before proceeding
 	b.mu.RLock()
 	lobby, exists := b.lobbies[i.ChannelID]
 	b.mu.RUnlock()
@@ -298,7 +307,7 @@ func (b *Bot) handleStartGame(s *discordgo.Session, i *discordgo.InteractionCrea
 		log.Printf("Error updating message with betting UI: %v", err)
 		return
 	}
-	
+
 	// Update the betting UI with detailed player information
 	b.updateBettingUI(s, i, game)
 
@@ -343,17 +352,12 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 	switch action {
 	case "hit":
 		err = game.Hit(i.Member.User.ID)
-		// Check if the error is a bust, which is actually a valid game state
-		if err == blackjack.ErrHandBust {
-			log.Printf("Player %s busted! This is a valid game state, not an error.", i.Member.User.ID)
-			err = nil // Clear the error since bust is a valid game state
-		}
 	case "stand":
 		err = game.Stand(i.Member.User.ID)
 	}
 
 	// Only treat non-bust errors as actual errors
-	if err != nil && err != blackjack.ErrHandBust {
+	if err != nil {
 		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 			Content: fmt.Sprintf("¡Ay, no bueno! *shuffles cards nervously* Something went wrong: %v", err),
 			Flags:   discordgo.MessageFlagsEphemeral,
@@ -646,8 +650,6 @@ func (b *Bot) handleBlackjackCommand(s *discordgo.Session, i *discordgo.Interact
 }
 
 func (b *Bot) handleWalletCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	log.Printf("Handling wallet command for channel: %s", i.ChannelID)
-
 	// Acknowledge the interaction immediately to prevent timeout
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -655,105 +657,21 @@ func (b *Bot) handleWalletCommand(s *discordgo.Session, i *discordgo.Interaction
 			Flags: discordgo.MessageFlagsEphemeral,
 		},
 	})
+
 	if err != nil {
-		log.Printf("Error acknowledging interaction: %v", err)
+		log.Printf("Error responding to interaction: %v", err)
 		return
 	}
 
 	// Get the user's wallet
 	userWallet, _, err := b.walletService.GetOrCreateWallet(context.Background(), i.Member.User.ID)
 	if err != nil {
-		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: "¡Ay, caramba! *looks confused* Failed to retrieve your wallet!",
-			Flags:   discordgo.MessageFlagsEphemeral,
-		})
-		if err != nil {
-			log.Printf("Error sending followup message: %v", err)
-		}
+		b.sendWalletErrorResponse(s, i, err, "Error retrieving your wallet. Please try again later.")
 		return
 	}
 
-	// Create wallet embed
-	balanceStr := fmt.Sprintf("$%d", userWallet.Balance)
-
-	fields := []*discordgo.MessageEmbedField{
-		{
-			Name:  "Balance",
-			Value: balanceStr,
-		},
-	}
-
-	if userWallet.LoanAmount > 0 {
-		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:  "Loan Amount",
-			Value: fmt.Sprintf("$%d", userWallet.LoanAmount),
-		})
-	}
-
-	// Get transaction history (ledger)
-	transactions, _ := b.walletService.GetRecentTransactions(context.Background(), i.Member.User.ID, 10)
-	if len(transactions) > 0 {
-		transactionsStr := ""
-		for _, tx := range transactions {
-			// Format with date, amount, and description
-			amountStr := fmt.Sprintf("$%+d", tx.Amount)
-			dateStr := tx.Timestamp.Format("01/02 15:04")
-			transactionsStr += fmt.Sprintf("%s | %s | %s\n", dateStr, amountStr, tx.Description)
-		}
-
-		fields = append(fields, &discordgo.MessageEmbedField{
-			Name:  "Transaction History",
-			Value: transactionsStr,
-		})
-	}
-
-	embed := &discordgo.MessageEmbed{
-		Title:       "Your Wallet",
-		Description: fmt.Sprintf("Here's your current wallet status, %s", i.Member.User.Username),
-		Color:       0x00FF00, // Green color
-		Fields:      fields,
-		Footer: &discordgo.MessageEmbedFooter{
-			Text: fmt.Sprintf("Last Updated: %s", userWallet.LastUpdated.Format(time.RFC1123)),
-		},
-	}
-
-	// Create components for wallet actions
-	components := []discordgo.MessageComponent{}
-
-	// Add action buttons
-	actionRow := discordgo.ActionsRow{
-		Components: []discordgo.MessageComponent{
-			discordgo.Button{
-				Label:    "Get Loan",
-				Style:    discordgo.PrimaryButton,
-				CustomID: "wallet_loan",
-			},
-		},
-	}
-
-	// Only show repay button if there's a loan to repay
-	if userWallet.LoanAmount > 0 {
-		actionRow.Components = append(actionRow.Components, discordgo.Button{
-			Label:    "Repay Loan",
-			Style:    discordgo.SuccessButton,
-			CustomID: "wallet_repay",
-		})
-	}
-
-	// Add the action row if it has any components
-	if len(actionRow.Components) > 0 {
-		components = append(components, actionRow)
-	}
-
-	// Send followup message with wallet info
-	_, err = s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
-		Content:    "Your wallet:",
-		Embeds:     []*discordgo.MessageEmbed{embed},
-		Components: components,
-	})
-	if err != nil {
-		log.Printf("Error sending followup message: %v", err)
-	}
+	// Update the wallet message - use false for isUpdate since this is a new message
+	b.updateWalletMessage(s, i, userWallet, false)
 }
 
 func (b *Bot) displayGameState(s *discordgo.Session, i *discordgo.InteractionCreate, game interface{}) *discordgo.MessageEmbed {
@@ -779,10 +697,11 @@ func (b *Bot) displayGameState(s *discordgo.Session, i *discordgo.InteractionCre
 		})
 		return embed
 	case *blackjack.Game:
-		// Check if deck was shuffled
-		if gameState.WasShuffled() {
+		// Check if deck was shuffled using service method
+		wasShuffled, shuffleMessage := gameState.GetShuffleInfo()
+		if wasShuffled {
 			// Send a message about shuffling
-			s.ChannelMessageSend(i.ChannelID, "*We've been playing a long time eh my friends? Let Tuco shuffle the deck, maybe it bring Tuco more luck.* ")
+			s.ChannelMessageSend(i.ChannelID, shuffleMessage)
 		}
 
 		// Create the game state embed
@@ -847,8 +766,9 @@ func (b *Bot) handleBet(s *discordgo.Session, i *discordgo.InteractionCreate, be
 
 	// If a loan was given, notify the player
 	if loanGiven {
-		_, err = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: fmt.Sprintf("*Tuco smiles and slides some chips your way* ¡No problemo, amigo! I've given you a loan of $100. Don't forget to pay me back... or else! *winks*"),
+		loanAmount := b.walletService.GetStandardLoanIncrement()
+		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+			Content: fmt.Sprintf("*Tuco smiles and slides some chips your way* ¡No problemo, amigo! I've given you a loan of $%d. Don't forget to pay me back... or else! *winks*", loanAmount),
 			Flags:   discordgo.MessageFlagsEphemeral,
 		})
 		if err != nil {
@@ -876,160 +796,117 @@ func (b *Bot) handleBet(s *discordgo.Session, i *discordgo.InteractionCreate, be
 }
 
 func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCreate, game *blackjack.Game) error {
-	// Create the game embed
-	embed := b.displayGameState(s, i, game)
+	log.Printf("Updating betting UI")
 
-	// Keep the betting buttons
-	components := []discordgo.MessageComponent{
-		discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				discordgo.Button{
-					Label:    "Bet $5",
-					Style:    discordgo.SuccessButton,
-					CustomID: "bet_5",
-				},
-				discordgo.Button{
-					Label:    "Bet $10",
-					Style:    discordgo.SuccessButton,
-					CustomID: "bet_10",
-				},
-				discordgo.Button{
-					Label:    "Bet $25",
-					Style:    discordgo.SuccessButton,
-					CustomID: "bet_25",
-				},
-			},
-		},
-	}
-
-	// Get player wallets and highest balance from the game service
+	// Get player information from the service layer
 	ctx := context.Background()
-	playerWallets, highestBalance, err := game.GetPlayerWallets(ctx, b.walletService)
+	playersInfo, err := game.GetAllPlayersInfo(ctx, b.walletService)
 	if err != nil {
-		log.Printf("Error getting player wallets: %v", err)
+		log.Printf("Error getting player information: %v", err)
 	}
 
-	// Add betting status to the embed
-	bettingStatusField := &discordgo.MessageEmbedField{
-		Name:   "Betting Status",
-		Value:  "",
-		Inline: false,
+	// Get current betting player info
+	currentPlayerInfo, err := game.GetCurrentBettingPlayerInfo(ctx, b.walletService)
+	if err != nil {
+		log.Printf("Error getting current betting player info: %v", err)
+		return err
 	}
 
-	// Display players in the same order as PlayerOrder
-	if len(game.PlayerOrder) > 0 {
-		// First, display the current player whose turn it is to bet
-		if game.CurrentBettingPlayer < len(game.PlayerOrder) {
-			currentPlayerID := game.PlayerOrder[game.CurrentBettingPlayer]
-			user, err := s.User(currentPlayerID)
-			if err == nil {
-				// Get player's wallet
-				wallet := playerWallets[currentPlayerID]
-				walletInfo := ""
-				if wallet != nil {
-					walletInfo = fmt.Sprintf(" ($%d)", wallet.Balance)
-				}
+	// Create the embed
+	embed := &discordgo.MessageEmbed{
+		Title:       "Blackjack - Betting Phase",
+		Description: "Place your bets!",
+		Color:       0x00FF00, // Green
+		Fields:      []*discordgo.MessageEmbedField{},
+	}
 
-				// Add crown emoji if this player has the highest balance
-				crownEmoji := ""
-				if wallet != nil && wallet.Balance == highestBalance {
-					crownEmoji = " 👑"
-				}
-
-				if bet, hasBet := game.Bets[currentPlayerID]; hasBet {
-					bettingStatusField.Value += fmt.Sprintf("👉 **%s%s%s**: Bet $%d (Current Turn)\n", user.Username, walletInfo, crownEmoji, bet)
-				} else {
-					bettingStatusField.Value += fmt.Sprintf("👉 **%s%s%s**: Waiting for bet (Current Turn)\n", user.Username, walletInfo, crownEmoji)
-				}
-			}
+	// Add fields for each player
+	for _, playerInfo := range playersInfo {
+		// Get the Discord username
+		user, err := s.User(playerInfo.PlayerID)
+		if err != nil {
+			log.Printf("Error getting user %s: %v", playerInfo.PlayerID, err)
+			continue
 		}
 
-		// Then display all other players in order
-		for _, playerID := range game.PlayerOrder {
-			// Skip the current player as we've already displayed them
-			if game.CurrentBettingPlayer < len(game.PlayerOrder) && playerID == game.PlayerOrder[game.CurrentBettingPlayer] {
-				continue
+		// Format the player's status
+		statusText := fmt.Sprintf("Balance: $%d", playerInfo.WalletBalance)
+		if playerInfo.HasBet {
+			statusText += fmt.Sprintf("\nBet: $%d", playerInfo.BetAmount)
+		} else {
+			statusText += "\nNo bet placed yet"
+		}
+
+		// Highlight the current player
+		fieldName := user.Username
+		if playerInfo.IsCurrentTurn {
+			fieldName += " 👈 YOUR TURN"
+		}
+
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   fieldName,
+			Value:  statusText,
+			Inline: true,
+		})
+	}
+
+	// Create bet buttons
+	var components []discordgo.MessageComponent
+
+	// Only show bet buttons if it's someone's turn
+	if currentPlayerInfo != nil {
+		// Get the current player's user object
+		currentUser, err := s.User(currentPlayerInfo.PlayerID)
+		if err == nil {
+			// Add a message showing whose turn it is
+			embed.Description = fmt.Sprintf("It's %s's turn to bet!", currentUser.Username)
+		}
+
+		// Only show bet buttons to the current player
+		if i.Member != nil && i.Member.User != nil && i.Member.User.ID == currentPlayerInfo.PlayerID {
+			// Fixed bet options: $5, $10, and $25 only
+			betOptions := []int64{5, 10, 25}
+
+			// Create bet buttons
+			betButtons := []discordgo.MessageComponent{}
+			for _, amount := range betOptions {
+				// Only show bet options the player can afford
+				if amount <= currentPlayerInfo.WalletBalance {
+					betButtons = append(betButtons, discordgo.Button{
+						Label:    fmt.Sprintf("$%d", amount),
+						Style:    discordgo.SuccessButton,
+						CustomID: fmt.Sprintf("bet_%d", amount),
+					})
+				}
 			}
 
-			user, err := s.User(playerID)
-			if err != nil {
-				log.Printf("Error getting user %s: %v", playerID, err)
-				continue
-			}
+			// Split buttons into rows of 5 max
+			for i := 0; i < len(betButtons); i += 5 {
+				end := i + 5
+				if end > len(betButtons) {
+					end = len(betButtons)
+				}
 
-			// Get player's wallet
-			wallet := playerWallets[playerID]
-			walletInfo := ""
-			if wallet != nil {
-				walletInfo = fmt.Sprintf(" ($%d)", wallet.Balance)
-			}
-
-			// Add crown emoji if this player has the highest balance
-			crownEmoji := ""
-			if wallet != nil && wallet.Balance == highestBalance {
-				crownEmoji = " 👑"
-			}
-
-			if bet, hasBet := game.Bets[playerID]; hasBet {
-				bettingStatusField.Value += fmt.Sprintf("%s%s%s: Bet $%d\n", user.Username, walletInfo, crownEmoji, bet)
-			} else {
-				bettingStatusField.Value += fmt.Sprintf("%s%s%s: Waiting for bet\n", user.Username, walletInfo, crownEmoji)
+				components = append(components, discordgo.ActionsRow{
+					Components: betButtons[i:end],
+				})
 			}
 		}
 	} else {
-		// Fallback to using Players map if PlayerOrder is not initialized
-		for playerID := range game.Players {
-			user, err := s.User(playerID)
-			if err != nil {
-				log.Printf("Error getting user %s: %v", playerID, err)
-				continue
-			}
-
-			// Get player's wallet
-			wallet := playerWallets[playerID]
-			walletInfo := ""
-			if wallet != nil {
-				walletInfo = fmt.Sprintf(" ($%d)", wallet.Balance)
-			}
-
-			// Add crown emoji if this player has the highest balance
-			crownEmoji := ""
-			if wallet != nil && wallet.Balance == highestBalance {
-				crownEmoji = " 👑"
-			}
-
-			prefix := ""
-			if len(game.PlayerOrder) > 0 && game.CurrentBettingPlayer < len(game.PlayerOrder) &&
-				game.PlayerOrder[game.CurrentBettingPlayer] == playerID {
-				prefix = "👉 "
-			}
-
-			if bet, hasBet := game.Bets[playerID]; hasBet {
-				bettingStatusField.Value += fmt.Sprintf("%s%s%s%s: Bet $%d\n", prefix, user.Username, walletInfo, crownEmoji, bet)
-			} else {
-				bettingStatusField.Value += fmt.Sprintf("%s%s%s%s: Waiting for bet\n", prefix, user.Username, walletInfo, crownEmoji)
-			}
-		}
+		// No current player - game might be waiting to start or already in progress
+		embed.Description = "Waiting for players to join..."
 	}
 
-	// Add the betting status field to the embed
-	if bettingStatusField.Value != "" {
-		embed.Fields = append(embed.Fields, bettingStatusField)
-	}
-
-	// Edit the original message
-	var err2 error
-	_, err2 = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content:    &i.Message.Content,
-		Embeds:     &[]*discordgo.MessageEmbed{embed},
+	// Edit the message with the updated UI
+	var msgErr error
+	_, msgErr = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
+		Embed:      embed,
+		ID:         i.Message.ID,
+		Channel:    i.ChannelID,
 		Components: &components,
 	})
-	if err2 != nil {
-		log.Printf("Error editing interaction response: %v", err2)
-		return err2
-	}
 
-	return nil
+	return msgErr
 }
 
 func (b *Bot) updateGameUI(s *discordgo.Session, i *discordgo.InteractionCreate, game *blackjack.Game) error {
@@ -1098,99 +975,112 @@ func (b *Bot) updateGameUI(s *discordgo.Session, i *discordgo.InteractionCreate,
 }
 
 func (b *Bot) handleWalletLoan(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	userID := i.Member.User.ID
-	ctx := context.Background()
+	log.Printf("Processing loan request for user %s", i.Member.User.ID)
 
-	// Give the user a loan of 100
-	loanAmount := int64(100)
-	err := b.walletService.TakeLoan(ctx, userID, loanAmount)
+	// The interaction is already acknowledged in handleMessageComponentInteraction
+	// so we don't need to acknowledge it again here
+
+	// Get the standard loan increment from the service
+	loanAmount := b.walletService.GetStandardLoanIncrement()
+
+	// Validate loan eligibility
+	err := b.walletService.ValidateLoan(context.Background(), i.Member.User.ID, loanAmount)
 	if err != nil {
-		log.Printf("Error adding loan: %v", err)
-		content := "u00a1Ay caramba! *looks worried* Something went wrong with the loan. Try again later!"
-		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: content,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		})
-		if err != nil {
-			log.Printf("Error sending followup message: %v", err)
-		}
+		b.sendWalletErrorResponse(s, i, err, fmt.Sprintf("Cannot take a loan: %v", err))
 		return
 	}
 
-	// Update the wallet display
-	updatedWallet, _, err := b.walletService.GetOrCreateWallet(ctx, userID)
+	// Process the loan
+	updatedWallet, _, err := b.walletService.GiveLoan(context.Background(), i.Member.User.ID, loanAmount)
 	if err != nil {
-		log.Printf("Error getting updated wallet: %v", err)
+		b.sendWalletErrorResponse(s, i, err, "Error processing your loan. Please try again later.")
 		return
 	}
 
 	// Update the message with the new wallet info
-	b.updateWalletMessage(s, i, updatedWallet)
+	log.Printf("Loan processed successfully for user %s, updating wallet message", i.Member.User.ID)
+	b.updateWalletMessage(s, i, updatedWallet, true)
 }
 
 func (b *Bot) handleWalletRepayment(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	userID := i.Member.User.ID
-	ctx := context.Background()
+	log.Printf("Processing loan repayment request for user %s", i.Member.User.ID)
 
-	// Get the user's wallet
-	wallet, _, err := b.walletService.GetOrCreateWallet(ctx, userID)
+	// The interaction is already acknowledged in handleMessageComponentInteraction
+	// so we don't need to acknowledge it again here
+
+	// Get the repayment amount from the service
+	repaymentAmount, err := b.walletService.CalculateRepaymentAmount(context.Background(), i.Member.User.ID)
 	if err != nil {
-		log.Printf("Error getting wallet: %v", err)
+		b.sendWalletErrorResponse(s, i, err, fmt.Sprintf("Cannot calculate repayment amount: %v", err))
 		return
 	}
 
-	if wallet.LoanAmount <= 0 {
-		content := "u00a1No hay deuda, amigo! *looks confused* You don't have any loans to repay!"
-		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: content,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		})
-		if err != nil {
-			log.Printf("Error sending followup message: %v", err)
-		}
-		return
-	}
-
-	// Check if user has enough balance to repay
-	if wallet.Balance < wallet.LoanAmount {
-		content := "u00a1No tienes suficiente dinero! *counts your chips* You don't have enough to repay your loan!"
-		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: content,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		})
-		if err != nil {
-			log.Printf("Error sending followup message: %v", err)
-		}
-		return
-	}
-
-	// Repay the loan - use the full loan amount
-	err = b.walletService.RepayLoan(ctx, userID, wallet.LoanAmount)
+	// Validate repayment eligibility
+	err = b.walletService.ValidateRepayment(context.Background(), i.Member.User.ID, repaymentAmount)
 	if err != nil {
-		log.Printf("Error repaying loan: %v", err)
-		content := "u00a1Ay caramba! *looks worried* Something went wrong with the repayment. Try again later!"
-		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
-			Content: content,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		})
-		if err != nil {
-			log.Printf("Error sending followup message: %v", err)
-		}
+		b.sendWalletErrorResponse(s, i, err, fmt.Sprintf("Oye, no one pulls a fast one on Tuco! %v", err))
 		return
 	}
 
-	// Update the wallet display
-	updatedWallet, _, err := b.walletService.GetOrCreateWallet(ctx, userID)
+	// Process the repayment
+	err = b.walletService.RepayLoan(context.Background(), i.Member.User.ID, repaymentAmount)
 	if err != nil {
-		log.Printf("Error getting updated wallet: %v", err)
+		b.sendWalletErrorResponse(s, i, err, "Error processing your loan repayment. Please try again later.")
 		return
 	}
 
+	// Get the updated wallet
+	updatedWallet, _, err := b.walletService.GetOrCreateWallet(context.Background(), i.Member.User.ID)
+	if err != nil {
+		b.sendWalletErrorResponse(s, i, err, "Error retrieving your updated wallet. Please try again later.")
+		return
+	}
+
+	log.Printf("Loan repayment processed successfully for user %s, updating wallet message", i.Member.User.ID)
 	// Update the message with the new wallet info
-	b.updateWalletMessage(s, i, updatedWallet)
+	b.updateWalletMessage(s, i, updatedWallet, true)
 }
 
-func (b *Bot) updateWalletMessage(s *discordgo.Session, i *discordgo.InteractionCreate, userWallet *entities.Wallet) {
+func (b *Bot) updateWalletMessage(s *discordgo.Session, i *discordgo.InteractionCreate, userWallet *entities.Wallet, isUpdate bool) error {
+	log.Printf("Updating wallet message - isUpdate: %v, hasMessage: %v, userID: %s",
+		isUpdate, i.Message != nil, i.Member.User.ID)
+
+	embed, components := b.createWalletEmbed(userWallet, i.Member.User.ID, i.Member.User.Username)
+
+	if isUpdate && i.Message != nil {
+		// Edit the interaction response
+		log.Printf("Editing existing wallet message for user %s", i.Member.User.ID)
+		_, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
+			Content:    &i.Message.Content,
+			Embeds:     &[]*discordgo.MessageEmbed{embed},
+			Components: &components,
+		})
+		if err != nil {
+			log.Printf("Error updating wallet message: %v", err)
+		}
+		return err
+	} else {
+		// Either isUpdate is false or i.Message is nil
+		// Send a new message instead
+		if isUpdate {
+			log.Printf("Attempted to update wallet message but i.Message was nil, sending new message instead for user %s", i.Member.User.ID)
+		} else {
+			log.Printf("Sending new wallet message for user %s", i.Member.User.ID)
+		}
+
+		_, err := s.FollowupMessageCreate(i.Interaction, false, &discordgo.WebhookParams{
+			Content:    "Your wallet:",
+			Embeds:     []*discordgo.MessageEmbed{embed},
+			Components: components,
+		})
+		if err != nil {
+			log.Printf("Error sending wallet message: %v", err)
+		}
+		return err
+	}
+}
+
+func (b *Bot) createWalletEmbed(userWallet *entities.Wallet, userID string, username string) (*discordgo.MessageEmbed, []discordgo.MessageComponent) {
 	// Format balance with dollar sign
 	balanceStr := fmt.Sprintf("$%d", userWallet.Balance)
 
@@ -1210,7 +1100,7 @@ func (b *Bot) updateWalletMessage(s *discordgo.Session, i *discordgo.Interaction
 	}
 
 	// Get transaction history (ledger)
-	transactions, _ := b.walletService.GetRecentTransactions(context.Background(), i.Member.User.ID, 10)
+	transactions, _ := b.walletService.GetRecentTransactions(context.Background(), userID, 10)
 	if len(transactions) > 0 {
 		transactionsStr := ""
 		for _, tx := range transactions {
@@ -1228,7 +1118,7 @@ func (b *Bot) updateWalletMessage(s *discordgo.Session, i *discordgo.Interaction
 
 	embed := &discordgo.MessageEmbed{
 		Title:       "Your Wallet",
-		Description: fmt.Sprintf("Here's your current wallet status, %s", i.Member.User.Username),
+		Description: fmt.Sprintf("Here's your current wallet status, %s", username),
 		Color:       0x00FF00, // Green color
 		Fields:      fields,
 		Footer: &discordgo.MessageEmbedFooter{
@@ -1243,7 +1133,7 @@ func (b *Bot) updateWalletMessage(s *discordgo.Session, i *discordgo.Interaction
 	actionRow := discordgo.ActionsRow{
 		Components: []discordgo.MessageComponent{
 			discordgo.Button{
-				Label:    "Get Loan",
+				Label:    fmt.Sprintf("Get $%d Loan", b.walletService.GetStandardLoanIncrement()),
 				Style:    discordgo.PrimaryButton,
 				CustomID: "wallet_loan",
 			},
@@ -1251,9 +1141,13 @@ func (b *Bot) updateWalletMessage(s *discordgo.Session, i *discordgo.Interaction
 	}
 
 	// Only show repay button if there's a loan to repay
-	if userWallet.LoanAmount > 0 {
+	canRepay, err := b.walletService.CanRepayLoan(context.Background(), userID)
+	if err == nil && canRepay {
+		// Get the standard repayment amount from the service
+		repaymentAmount, _ := b.walletService.CalculateRepaymentAmount(context.Background(), userID)
+
 		actionRow.Components = append(actionRow.Components, discordgo.Button{
-			Label:    "Repay Loan",
+			Label:    fmt.Sprintf("Repay $%d", repaymentAmount),
 			Style:    discordgo.SuccessButton,
 			CustomID: "wallet_repay",
 		})
@@ -1264,15 +1158,17 @@ func (b *Bot) updateWalletMessage(s *discordgo.Session, i *discordgo.Interaction
 		components = append(components, actionRow)
 	}
 
-	// Edit the interaction response
-	var err2 error
-	_, err2 = s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{
-		Content:    &i.Message.Content,
-		Embeds:     &[]*discordgo.MessageEmbed{embed},
-		Components: &components,
-	})
+	return embed, components
+}
 
-	if err2 != nil {
-		log.Printf("Error updating wallet message: %v", err2)
+// sendWalletErrorResponse sends a standardized error response for wallet operations
+func (b *Bot) sendWalletErrorResponse(s *discordgo.Session, i *discordgo.InteractionCreate, err error, message string) {
+	log.Printf("Wallet error: %v", err)
+	_, err = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+		Content: message,
+		Flags:   discordgo.MessageFlagsEphemeral,
+	})
+	if err != nil {
+		log.Printf("Error sending followup message: %v", err)
 	}
 }

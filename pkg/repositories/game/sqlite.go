@@ -234,7 +234,7 @@ func (r *SQLiteRepository) GetPlayerResults(ctx context.Context, playerID string
 		// Add player result
 		playerResult := &entities.PlayerResult{
 			PlayerID: playerID,
-			Result:   entities.Result(resultStr),
+			Result:   entities.StringResult(resultStr),
 			Score:    score,
 		}
 		result.PlayerResults = append(result.PlayerResults, playerResult)
@@ -351,7 +351,7 @@ func (r *SQLiteRepository) GetChannelResults(ctx context.Context, channelID stri
 		if result, exists := resultMap[gameID]; exists {
 			playerResult := &entities.PlayerResult{
 				PlayerID: playerID,
-				Result:   entities.Result(resultStr),
+				Result:   entities.StringResult(resultStr),
 				Score:    score,
 			}
 			result.PlayerResults = append(result.PlayerResults, playerResult)

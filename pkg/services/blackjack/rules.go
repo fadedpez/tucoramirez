@@ -9,7 +9,28 @@ import (
 const (
 	StandardDecks      = 6  // Standard number of decks in the shoe
 	ReshuffleThreshold = 75 // Reshuffle when 75 cards remain (~25% of one shoe)
+	MaxPlayers         = 7  // Max number of players allowed in a blackjack game
 )
+
+// Result represents the outcome of a blackjack hand
+type Result string
+
+const (
+	ResultWin       Result = "WIN"
+	ResultLose      Result = "LOSE"
+	ResultPush      Result = "PUSH"
+	ResultBlackjack Result = "BLACKJACK"
+)
+
+// String returns the string representation of the result
+func (r Result) String() string {
+	return string(r)
+}
+
+// IsWin returns true if this result represents a win
+func (r Result) IsWin() bool {
+	return r == ResultWin || r == ResultBlackjack
+}
 
 func GetCardValue(card *entities.Card) int {
 	switch card.Rank {

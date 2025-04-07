@@ -56,7 +56,7 @@ func (h *Hand) AddCard(card *entities.Card) error {
 	// Auto-bust if score exceeds 21
 	if GetBestScore(h.Cards) > 21 {
 		h.Status = StatusBust
-		return ErrHandBust
+		return nil
 	}
 
 	return nil

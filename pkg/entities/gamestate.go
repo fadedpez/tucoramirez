@@ -2,13 +2,34 @@ package entities
 
 import "time"
 
-// Base result types
-type Result string
+// Result represents the outcome of a player's participation in a game
+type Result interface {
+	// String returns the string representation of the result
+	String() string
+	
+	// IsWin returns true if this result represents a win
+	IsWin() bool
+}
 
+// StringResult is a simple string-based implementation of Result
+type StringResult string
+
+// String returns the string representation of the result
+func (r StringResult) String() string {
+	return string(r)
+}
+
+// IsWin returns true if this result represents a win
+func (r StringResult) IsWin() bool {
+	return r == StringResultWin || r == StringResultBlackjack
+}
+
+// Common result constants
 const (
-	ResultWin  Result = "WIN"
-	ResultLose Result = "LOSE"
-	ResultPush Result = "PUSH"
+	StringResultWin       StringResult = "WIN"
+	StringResultLose      StringResult = "LOSE"
+	StringResultPush      StringResult = "PUSH"
+	StringResultBlackjack StringResult = "BLACKJACK"
 )
 
 // Game state types
