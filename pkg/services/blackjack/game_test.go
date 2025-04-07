@@ -10,6 +10,7 @@ import (
 	mock_wallet_service "github.com/fadedpez/tucoramirez/pkg/services/wallet/mock"
 	"github.com/stretchr/testify/suite"
 	"go.uber.org/mock/gomock"
+	"strings"
 )
 
 // GameTestSuite is a test suite for the Game service
@@ -272,7 +273,7 @@ func (s *GameTestSuite) TestPayoutCalculation() {
 		Times(1)
 
 	// Process payouts with wallet updates
-	err = s.game.ProcessPayouts(context.Background(), mockWalletService)
+	err = s.game.ProcessPayouts(context.Background(), wrapMockWalletService(mockWalletService))
 	s.NoError(err)
 
 	// Verify at least one game result was saved
@@ -371,7 +372,7 @@ func (s *GameTestSuite) TestPayoutCalculation_DealerWins() {
 		Times(1)
 
 	// Process payouts with wallet updates
-	err = s.game.ProcessPayouts(context.Background(), mockWalletService)
+	err = s.game.ProcessPayouts(context.Background(), wrapMockWalletService(mockWalletService))
 	s.NoError(err)
 
 	// Verify at least one game result was saved
@@ -476,7 +477,7 @@ func (s *GameTestSuite) TestPayoutCalculation_Push() {
 		Times(1)
 
 	// Process payouts with wallet updates
-	err = s.game.ProcessPayouts(context.Background(), mockWalletService)
+	err = s.game.ProcessPayouts(context.Background(), wrapMockWalletService(mockWalletService))
 	s.NoError(err)
 
 	// Verify at least one game result was saved
@@ -581,7 +582,7 @@ func (s *GameTestSuite) TestPayoutCalculation_Blackjack() {
 		Times(1)
 
 	// Process payouts with wallet updates
-	err = s.game.ProcessPayouts(context.Background(), mockWalletService)
+	err = s.game.ProcessPayouts(context.Background(), wrapMockWalletService(mockWalletService))
 	s.NoError(err)
 
 	// Verify at least one game result was saved
@@ -687,7 +688,7 @@ func (s *GameTestSuite) TestPayoutCalculation_DealerBust() {
 		Times(1)
 
 	// Process payouts with wallet updates
-	err = s.game.ProcessPayouts(context.Background(), mockWalletService)
+	err = s.game.ProcessPayouts(context.Background(), wrapMockWalletService(mockWalletService))
 	s.NoError(err)
 
 	// Verify at least one game result was saved
@@ -791,7 +792,7 @@ func (s *GameTestSuite) TestBlackjackPayout() {
 		Times(1)
 
 	// Process payouts with wallet updates
-	err = s.game.ProcessPayouts(context.Background(), mockWalletService)
+	err = s.game.ProcessPayouts(context.Background(), wrapMockWalletService(mockWalletService))
 	s.NoError(err)
 
 	// Verify at least one game result was saved
@@ -895,4 +896,25 @@ func (s *GameTestSuite) TestGameCompletionWithBust() {
 	// Player2 should lose (bust)
 	s.NotNil(player2Result, "Player2 result should be present")
 	s.Equal(ResultLose, player2Result.Result)
+}
+
+// mockWalletServiceWrapper wraps a mock wallet service and adds the GetStandardLoanIncrement method
+type mockWalletServiceWrapper struct {
+	*mock_wallet_service.MockWalletService
+}
+
+// GetStandardLoanIncrement implements the WalletService interface
+func (m *mockWalletServiceWrapper) GetStandardLoanIncrement() int64 {
+	return 100 // Return the standard loan amount for tests
+}
+
+// CanRepayLoan implements the WalletService interface
+func (m *mockWalletServiceWrapper) CanRepayLoan(ctx context.Context, userID string) (bool, error) {
+	// For testing purposes, assume a loan can be repaid if userID contains "loan"
+	return strings.Contains(userID, "loan"), nil
+}
+
+// wrapMockWalletService wraps a mock wallet service to implement the full WalletService interface
+func wrapMockWalletService(mock *mock_wallet_service.MockWalletService) WalletService {
+	return &mockWalletServiceWrapper{MockWalletService: mock}
 }

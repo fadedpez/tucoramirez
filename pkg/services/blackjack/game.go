@@ -11,11 +11,25 @@ import (
 	"github.com/fadedpez/tucoramirez/pkg/repositories/game"
 )
 
+// Game-specific errors
 var (
-	ErrGameNotStarted = errors.New("game not started")
-	ErrGameInProgress = errors.New("game already in progress")
-	ErrPlayerNotFound = errors.New("player not found")
-	ErrInvalidAction  = errors.New("invalid action for current game state")
+	ErrGameNotStarted     = errors.New("game not started")
+	ErrGameInProgress     = errors.New("game already in progress")
+	ErrPlayerNotFound     = errors.New("player not found")
+	ErrInvalidAction      = errors.New("invalid action for current game state")
+	ErrMaxPlayersReached  = errors.New("maximum number of players reached")
+	ErrNoPlayers          = errors.New("no players in game")
+	ErrNotAllBetsPlaced   = errors.New("not all players have placed bets")
+	ErrFailedToLoadDeck   = errors.New("failed to load deck")
+	ErrFailedToSaveDeck   = errors.New("failed to save deck")
+	ErrNotPlayerTurn      = errors.New("not player's turn")
+	ErrPlayerAlreadyBet   = errors.New("player already placed a bet")
+	ErrInvalidDealerScore = errors.New("invalid dealer score")
+)
+
+// GameType constants
+const (
+	StateBlackjack entities.GameState = "BLACKJACK"
 )
 
 // BlackjackDetails contains game-specific result details
@@ -26,12 +40,12 @@ type BlackjackDetails struct {
 }
 
 func (d *BlackjackDetails) GameType() entities.GameState {
-	return entities.StateDealing // we'll need to add a GameTypeBlackjack constant
+	return StateBlackjack
 }
 
 func (d *BlackjackDetails) ValidateDetails() error {
 	if d.DealerScore < 0 || d.DealerScore > 31 {
-		return errors.New("invalid dealer score")
+		return ErrInvalidDealerScore
 	}
 	return nil
 }
@@ -56,6 +70,8 @@ type Game struct {
 	CurrentTurn int      // Index into PlayerOrder
 }
 
+const StandardLoanAmount = 100
+
 func NewGame(channelID string, repo game.Repository) *Game {
 	return &Game{
 		State:     entities.StateWaiting,
@@ -72,6 +88,12 @@ func (g *Game) AddPlayer(playerID string) error {
 	if g.State != entities.StateWaiting {
 		return ErrGameInProgress
 	}
+
+	// Check if maximum players limit has been reached
+	if len(g.Players) >= 7 {
+		return ErrMaxPlayersReached
+	}
+
 	g.Players[playerID] = NewHand()
 	return nil
 }
@@ -80,10 +102,10 @@ func (g *Game) AddPlayer(playerID string) error {
 func (g *Game) Start() error {
 	// Allow starting from either WAITING or BETTING state
 	if g.State != entities.StateWaiting && g.State != entities.StateBetting {
-		return ErrGameInProgress
+		return ErrInvalidAction
 	}
 	if len(g.Players) == 0 {
-		return errors.New("no players in game")
+		return ErrNoPlayers
 	}
 
 	// If we're in WAITING state and not in BETTING, transition to BETTING first
@@ -103,7 +125,7 @@ func (g *Game) Start() error {
 
 	// Check if all players have placed bets when coming from BETTING state
 	if !g.CheckAllBetsPlaced() {
-		return errors.New("not all players have placed bets")
+		return ErrNotAllBetsPlaced
 	}
 
 	// Try to load existing deck from repository
@@ -111,7 +133,7 @@ func (g *Game) Start() error {
 	deck, err := g.repo.GetDeck(context.Background(), g.ChannelID)
 	if err != nil {
 		log.Printf("Error loading deck: %v", err)
-		return fmt.Errorf("failed to load deck: %v", err)
+		return ErrFailedToLoadDeck
 	}
 
 	// Create a new deck if none exists
@@ -124,7 +146,7 @@ func (g *Game) Start() error {
 		log.Printf("Saving new deck to repository for channel %s", g.ChannelID)
 		if err := g.repo.SaveDeck(context.Background(), g.ChannelID, g.Deck.Cards); err != nil {
 			log.Printf("Error saving deck: %v", err)
-			return fmt.Errorf("failed to save deck: %v", err)
+			return ErrFailedToSaveDeck
 		}
 	} else {
 		log.Printf("Using existing deck with %d cards for channel %s", len(deck), g.ChannelID)
@@ -153,7 +175,7 @@ func (g *Game) Start() error {
 
 	// Save the deck state after dealing
 	if err := g.repo.SaveDeck(context.Background(), g.ChannelID, g.Deck.Cards); err != nil {
-		return fmt.Errorf("failed to save deck: %v", err)
+		return ErrFailedToSaveDeck
 	}
 
 	// Set up player order
@@ -188,30 +210,30 @@ func (g *Game) StartBetting() error {
 
 // ValidateBet checks if a player can place a bet
 func (g *Game) ValidateBet(playerID string) error {
-    // Check if game is in betting state
-    if g.State != entities.StateBetting {
-        return errors.New("game not in betting state")
-    }
-    
-    // Check if player is in the game
-    if _, exists := g.Players[playerID]; !exists {
-        return ErrPlayerNotFound
-    }
-    
-    // Check if it's this player's turn to bet
-    if len(g.PlayerOrder) > 0 && g.CurrentBettingPlayer < len(g.PlayerOrder) {
-        currentPlayerID := g.PlayerOrder[g.CurrentBettingPlayer]
-        if currentPlayerID != playerID {
-            return errors.New("not player's turn to bet")
-        }
-    }
-    
-    // Check if player has already bet
-    if _, hasBet := g.Bets[playerID]; hasBet {
-        return errors.New("player already placed a bet")
-    }
-    
-    return nil
+	// Check if game is in betting state
+	if g.State != entities.StateBetting {
+		return ErrInvalidAction
+	}
+
+	// Check if player is in the game
+	if _, exists := g.Players[playerID]; !exists {
+		return ErrPlayerNotFound
+	}
+
+	// Check if it's this player's turn to bet
+	if len(g.PlayerOrder) > 0 && g.CurrentBettingPlayer < len(g.PlayerOrder) {
+		currentPlayerID := g.PlayerOrder[g.CurrentBettingPlayer]
+		if currentPlayerID != playerID {
+			return ErrNotPlayerTurn
+		}
+	}
+
+	// Check if player has already bet
+	if _, hasBet := g.Bets[playerID]; hasBet {
+		return ErrPlayerAlreadyBet
+	}
+
+	return nil
 }
 
 // PlaceBet places a bet for a player
@@ -258,12 +280,15 @@ func (g *Game) PlaceBetWithWalletUpdate(ctx context.Context, playerID string, be
 		return false, err
 	}
 
+	// Get the standard loan increment from the service
+	loanAmount := walletService.GetStandardLoanIncrement()
+
 	// Check if player has enough funds and give loan if needed
 	wallet, loanGiven, err := walletService.EnsureFundsWithLoan(
 		ctx,
 		playerID,
 		betAmount,
-		100, // Standard loan amount of $100
+		loanAmount, // Use the standard loan amount from the service
 	)
 	if err != nil {
 		// Revert the bet since the wallet update failed
@@ -330,7 +355,7 @@ func (g *Game) StartDealing() error {
 
 	// Check if all players have placed bets
 	if !g.CheckAllBetsPlaced() {
-		return errors.New("not all players have placed bets")
+		return ErrNotAllBetsPlaced
 	}
 
 	// Try to load existing deck from repository
@@ -338,7 +363,7 @@ func (g *Game) StartDealing() error {
 	deck, err := g.repo.GetDeck(context.Background(), g.ChannelID)
 	if err != nil {
 		log.Printf("Error loading deck: %v", err)
-		return fmt.Errorf("failed to load deck: %v", err)
+		return ErrFailedToLoadDeck
 	}
 
 	// Create a new deck if none exists
@@ -351,7 +376,7 @@ func (g *Game) StartDealing() error {
 		log.Printf("Saving new deck to repository for channel %s", g.ChannelID)
 		if err := g.repo.SaveDeck(context.Background(), g.ChannelID, g.Deck.Cards); err != nil {
 			log.Printf("Error saving deck: %v", err)
-			return fmt.Errorf("failed to save deck: %v", err)
+			return ErrFailedToSaveDeck
 		}
 	} else {
 		log.Printf("Using existing deck with %d cards for channel %s", len(deck), g.ChannelID)
@@ -380,7 +405,7 @@ func (g *Game) StartDealing() error {
 
 	// Save the deck state after dealing
 	if err := g.repo.SaveDeck(context.Background(), g.ChannelID, g.Deck.Cards); err != nil {
-		return fmt.Errorf("failed to save deck: %v", err)
+		return ErrFailedToSaveDeck
 	}
 
 	// Set up player order for playing phase (reuse the same order from betting)
@@ -412,7 +437,7 @@ func (g *Game) Hit(playerID string) error {
 
 	// Check if it's this player's turn
 	if !g.IsPlayerTurn(playerID) {
-		return errors.New("not your turn")
+		return ErrNotPlayerTurn
 	}
 
 	hand, exists := g.Players[playerID]
@@ -430,11 +455,12 @@ func (g *Game) Hit(playerID string) error {
 	}
 
 	if err := hand.AddCard(card); err != nil {
-		// If the player busts or has another error, advance to the next player's turn
-		if err == ErrHandBust {
-			g.AdvanceTurn()
-		}
 		return err
+	}
+
+	// Check if player busted after adding the card
+	if hand.Status == StatusBust {
+		g.AdvanceTurn()
 	}
 
 	return nil
@@ -448,7 +474,7 @@ func (g *Game) Stand(playerID string) error {
 
 	// Check if it's this player's turn
 	if !g.IsPlayerTurn(playerID) {
-		return errors.New("not your turn")
+		return ErrNotPlayerTurn
 	}
 
 	hand, exists := g.Players[playerID]
@@ -482,12 +508,12 @@ func (g *Game) PlayDealer() error {
 			card = g.Deck.Draw()
 		}
 		err := g.Dealer.AddCard(card)
-		// Handle bust as a valid game state, not an error
-		if err != nil && err != ErrHandBust {
-			return err
+		if err != nil {
+			return err // Any error here is a real error
 		}
-		// If dealer busts, break out of the loop
-		if err == ErrHandBust {
+
+		// Check if dealer busted
+		if g.Dealer.Status == StatusBust {
 			break
 		}
 	}
@@ -517,7 +543,7 @@ func (g *Game) ProcessPayouts(ctx context.Context, walletService WalletService) 
 	// Ensure game is in the COMPLETE state
 	if g.State != entities.StateComplete {
 		log.Printf("Cannot process payouts for game in state %s", g.State)
-		return fmt.Errorf("invalid action for current game state")
+		return ErrInvalidAction
 	}
 
 	// Check if payouts have already been processed
@@ -549,7 +575,7 @@ func (g *Game) ProcessPayouts(ctx context.Context, walletService WalletService) 
 		if payout > 0 {
 			log.Printf("Adding $%d winnings to player %s wallet with description: Blackjack winnings", payout, playerID)
 			log.Printf("[DEBUG] Calling walletService.AddFunds for player %s, amount %d", playerID, payout)
-			
+
 			err = walletService.AddFunds(ctx, playerID, payout, "Blackjack winnings")
 			if err != nil {
 				log.Printf("Error adding winnings to player %s wallet: %v", playerID, err)
@@ -582,7 +608,7 @@ func (g *Game) ProcessPayouts(ctx context.Context, walletService WalletService) 
 func (g *Game) CalculatePayouts() map[string]int64 {
 	// Calculate payouts for each player
 	payouts := make(map[string]int64)
-	
+
 	// Get the results
 	results, err := g.GetResults()
 	if err != nil {
@@ -595,20 +621,20 @@ func (g *Game) CalculatePayouts() map[string]int64 {
 		bet := g.Bets[result.PlayerID]
 
 		switch result.Result {
-		case ResultWin:
+		case entities.StringResultWin:
 			// Regular win pays 1:1 (original bet + equal amount as winnings)
 			// Since we already deducted the bet when it was placed, we need to return
 			// the original bet plus the winnings
 			payouts[result.PlayerID] = bet * 2
-		case ResultBlackjack:
+		case entities.StringResultBlackjack:
 			// Blackjack pays 3:2 (original bet + 1.5x bet as winnings)
 			// Since we already deducted the bet when it was placed, we need to return
 			// the original bet plus the winnings
-			payouts[result.PlayerID] = bet + (bet * 3 / 2)
-		case ResultPush:
+			payouts[result.PlayerID] = bet + int64(float64(bet)*1.5)
+		case entities.StringResultPush:
 			// Push returns the original bet
 			payouts[result.PlayerID] = bet
-		case ResultLose:
+		case entities.StringResultLose:
 			// Loss pays nothing (bet was already deducted when placed)
 			payouts[result.PlayerID] = 0
 		}
@@ -628,20 +654,10 @@ func (g *Game) CalculatePayouts() map[string]int64 {
 	return payouts
 }
 
-// Result represents the outcome of a hand
-type Result string
-
-const (
-	ResultWin       Result = "WIN"
-	ResultLose      Result = "LOSE"
-	ResultPush      Result = "PUSH"
-	ResultBlackjack Result = "BLACKJACK"
-)
-
 // HandResult stores the result of a player's hand
 type HandResult struct {
 	PlayerID string
-	Result   Result
+	Result   entities.StringResult
 	Score    int
 }
 
@@ -660,15 +676,15 @@ func (g *Game) GetResults() ([]HandResult, error) {
 		result := HandResult{PlayerID: playerID}
 
 		// Handle busted hands first
-		if IsBust(hand.Cards) {
-			result.Result = ResultLose
+		if hand.Status == StatusBust {
+			result.Result = entities.StringResultLose
 			result.Score = GetBestScore(hand.Cards)
 			results = append(results, result)
 
 			// Add player result
 			playerResults = append(playerResults, &entities.PlayerResult{
 				PlayerID: playerID,
-				Result:   entities.Result(result.Result),
+				Result:   entities.StringResultLose,
 				Score:    result.Score,
 			})
 			continue
@@ -677,9 +693,9 @@ func (g *Game) GetResults() ([]HandResult, error) {
 		// Check for player blackjack
 		if IsBlackjack(hand.Cards) {
 			if dealerBJ {
-				result.Result = ResultPush
+				result.Result = entities.StringResultPush
 			} else {
-				result.Result = ResultBlackjack
+				result.Result = entities.StringResultBlackjack
 			}
 			result.Score = GetBestScore(hand.Cards)
 			results = append(results, result)
@@ -687,7 +703,7 @@ func (g *Game) GetResults() ([]HandResult, error) {
 			// Add player result
 			playerResults = append(playerResults, &entities.PlayerResult{
 				PlayerID: playerID,
-				Result:   entities.Result(result.Result),
+				Result:   entities.StringResultBlackjack,
 				Score:    result.Score,
 			})
 			continue
@@ -698,15 +714,15 @@ func (g *Game) GetResults() ([]HandResult, error) {
 		result.Score = playerScore
 
 		if dealerBJ {
-			result.Result = ResultLose
-		} else if IsBust(g.Dealer.Cards) {
-			result.Result = ResultWin
+			result.Result = entities.StringResultLose
+		} else if hand.Status == StatusBust {
+			result.Result = entities.StringResultLose
 		} else if playerScore > dealerScore {
-			result.Result = ResultWin
+			result.Result = entities.StringResultWin
 		} else if playerScore < dealerScore {
-			result.Result = ResultLose
+			result.Result = entities.StringResultLose
 		} else {
-			result.Result = ResultPush
+			result.Result = entities.StringResultPush
 		}
 
 		results = append(results, result)
@@ -714,20 +730,20 @@ func (g *Game) GetResults() ([]HandResult, error) {
 		// Add player result
 		playerResults = append(playerResults, &entities.PlayerResult{
 			PlayerID: playerID,
-			Result:   entities.Result(result.Result),
+			Result:   result.Result,
 			Score:    result.Score,
 		})
 	}
 
 	gameResult := &entities.GameResult{
 		ChannelID:     g.ChannelID,
-		GameType:      entities.StateDealing,
+		GameType:      StateBlackjack,
 		CompletedAt:   time.Now(),
 		PlayerResults: playerResults,
 		Details: &BlackjackDetails{
 			DealerScore: dealerScore,
 			IsBlackjack: dealerBJ,
-			IsBust:      IsBust(g.Dealer.Cards),
+			IsBust:      g.Dealer.Status == StatusBust,
 		},
 	}
 
@@ -785,7 +801,7 @@ func (g *Game) GetCurrentTurnPlayerID() (string, error) {
 		return "", ErrInvalidAction
 	}
 	if len(g.PlayerOrder) == 0 {
-		return "", errors.New("no players in game")
+		return "", ErrNoPlayers
 	}
 	return g.PlayerOrder[g.CurrentTurn], nil
 }
@@ -811,7 +827,26 @@ func (g *Game) IsPlayerTurn(playerID string) bool {
 
 // IsGameComplete returns true if the game is in a completed state
 func (g *Game) IsGameComplete() bool {
-    return g.State == entities.StateComplete || g.CheckAllPlayersDone()
+	return g.State == entities.StateComplete || g.CheckAllPlayersDone()
+}
+
+// PlayerInfo contains all UI-relevant information about a player
+type PlayerInfo struct {
+	PlayerID          string
+	HasBet            bool
+	BetAmount         int64
+	WalletBalance     int64
+	HasHighestBalance bool
+	IsCurrentTurn     bool
+}
+
+// GameUIInfo contains all UI-relevant information about the game
+type GameUIInfo struct {
+	CurrentPlayerInfo    *PlayerInfo
+	AllPlayersInfo       []PlayerInfo
+	WasShuffled          bool
+	ShuffleMessage       string
+	ShouldProcessPayouts bool
 }
 
 // WalletService defines the interface for wallet operations
@@ -820,6 +855,7 @@ type WalletService interface {
 	AddFunds(ctx context.Context, userID string, amount int64, description string) error
 	RemoveFunds(ctx context.Context, userID string, amount int64, description string) error
 	EnsureFundsWithLoan(ctx context.Context, userID string, requiredAmount int64, loanAmount int64) (*entities.Wallet, bool, error)
+	GetStandardLoanIncrement() int64
 }
 
 // GetPlayerWallets retrieves wallets for all players in the game and identifies the highest balance
@@ -854,32 +890,174 @@ func (g *Game) GetPlayerWallets(ctx context.Context, walletService WalletService
 	return playerWallets, highestBalance, nil
 }
 
+// GetAllPlayersInfo returns information about all players in the game
+func (g *Game) GetAllPlayersInfo(ctx context.Context, walletService WalletService) ([]PlayerInfo, error) {
+	playerWallets, highestBalance, err := g.GetPlayerWallets(ctx, walletService)
+	if err != nil {
+		return nil, err
+	}
+
+	var playersInfo []PlayerInfo
+
+	// Use PlayerOrder if available
+	if len(g.PlayerOrder) > 0 {
+		for i, playerID := range g.PlayerOrder {
+			wallet := playerWallets[playerID]
+			bet, hasBet := g.Bets[playerID]
+
+			playersInfo = append(playersInfo, PlayerInfo{
+				PlayerID:          playerID,
+				HasBet:            hasBet,
+				BetAmount:         bet,
+				WalletBalance:     wallet.Balance,
+				HasHighestBalance: wallet.Balance == highestBalance,
+				IsCurrentTurn:     g.CurrentBettingPlayer == i,
+			})
+		}
+	} else {
+		// Fallback to Players map
+		for playerID := range g.Players {
+			wallet := playerWallets[playerID]
+			bet, hasBet := g.Bets[playerID]
+
+			playersInfo = append(playersInfo, PlayerInfo{
+				PlayerID:          playerID,
+				HasBet:            hasBet,
+				BetAmount:         bet,
+				WalletBalance:     wallet.Balance,
+				HasHighestBalance: wallet.Balance == highestBalance,
+				IsCurrentTurn:     false, // Can't determine current turn without PlayerOrder
+			})
+		}
+	}
+
+	return playersInfo, nil
+}
+
 // CompleteGameIfDone checks if the game is complete, plays the dealer if needed,
 // processes payouts, and returns whether the game is complete
 func (g *Game) CompleteGameIfDone(ctx context.Context, walletService WalletService) (bool, error) {
-    // If game is already complete, just return true
-    if g.State == entities.StateComplete {
-        return true, nil
-    }
-    
-    // Check if all players are done
-    if !g.CheckAllPlayersDone() {
-        return false, nil
-    }
-    
-    // If not all players bust, play dealer's turn
-    if !g.CheckAllPlayersBust() {
-        if err := g.PlayDealer(); err != nil {
-            return false, fmt.Errorf("error playing dealer's turn: %w", err)
-        }
-    }
-    
-    // Finish the game and process payouts if not already processed
-    if !g.PayoutsProcessed {
-        if err := g.FinishGame(ctx, walletService); err != nil {
-            return true, fmt.Errorf("error finishing game: %w", err)
-        }
-    }
-    
-    return true, nil
+	// If the game is already complete, no need to check again
+	if g.State == entities.StateComplete {
+		return true, nil
+	}
+
+	// If the game is not in the PLAYING state, it's not ready to be completed
+	if g.State != entities.StatePlaying {
+		return false, nil
+	}
+
+	// Check if all players are done (bust or stand)
+	if !g.CheckAllPlayersDone() {
+		return false, nil
+	}
+
+	// Play the dealer's turn
+	if err := g.PlayDealer(); err != nil {
+		return false, err
+	}
+
+	// Transition to COMPLETE state
+	g.State = entities.StateComplete
+
+	// Process payouts
+	if err := g.FinishGame(ctx, walletService); err != nil {
+		return true, err
+	}
+
+	return true, nil
+}
+
+// GetCurrentBettingPlayerInfo returns information about the current betting player
+func (g *Game) GetCurrentBettingPlayerInfo(ctx context.Context, walletService WalletService) (*PlayerInfo, error) {
+	if g.CurrentBettingPlayer >= len(g.PlayerOrder) {
+		return nil, nil
+	}
+
+	playerID := g.PlayerOrder[g.CurrentBettingPlayer]
+	wallet, _, err := walletService.GetOrCreateWallet(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	bet, hasBet := g.Bets[playerID]
+
+	return &PlayerInfo{
+		PlayerID:      playerID,
+		HasBet:        hasBet,
+		BetAmount:     bet,
+		WalletBalance: wallet.Balance,
+		IsCurrentTurn: true,
+	}, nil
+}
+
+// GetCurrentPlayerInfo returns information about the current player whose turn it is to play
+func (g *Game) GetCurrentPlayerInfo(ctx context.Context, walletService WalletService) (*PlayerInfo, error) {
+	if g.State != entities.StatePlaying || g.CurrentTurn >= len(g.PlayerOrder) {
+		return nil, nil
+	}
+
+	playerID := g.PlayerOrder[g.CurrentTurn]
+	wallet, _, err := walletService.GetOrCreateWallet(ctx, playerID)
+	if err != nil {
+		return nil, err
+	}
+
+	bet, hasBet := g.Bets[playerID]
+
+	return &PlayerInfo{
+		PlayerID:      playerID,
+		HasBet:        hasBet,
+		BetAmount:     bet,
+		WalletBalance: wallet.Balance,
+		IsCurrentTurn: true,
+	}, nil
+}
+
+// GetShuffleInfo returns information about whether the deck was shuffled
+func (g *Game) GetShuffleInfo() (bool, string) {
+	if g.shuffled {
+		g.shuffled = false // Reset after checking
+		return true, "We've been playing a long time eh my friends? Let Tuco shuffle the deck, maybe it bring Tuco more luck."
+	}
+	return false, ""
+}
+
+// ShouldProcessPayouts returns whether payouts should be processed
+func (g *Game) ShouldProcessPayouts() bool {
+	return g.State == entities.StateComplete && !g.PayoutsProcessed
+}
+
+// GetGameUIInfo returns all UI-relevant information about the game
+func (g *Game) GetGameUIInfo(ctx context.Context, walletService WalletService) (*GameUIInfo, error) {
+	var currentPlayer *PlayerInfo
+	var err error
+
+	// Get appropriate current player based on game state
+	if g.State == entities.StateBetting {
+		currentPlayer, err = g.GetCurrentBettingPlayerInfo(ctx, walletService)
+		if err != nil {
+			return nil, err
+		}
+	} else if g.State == entities.StatePlaying {
+		currentPlayer, err = g.GetCurrentPlayerInfo(ctx, walletService)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	allPlayers, err := g.GetAllPlayersInfo(ctx, walletService)
+	if err != nil {
+		return nil, err
+	}
+
+	wasShuffled, shuffleMessage := g.GetShuffleInfo()
+
+	return &GameUIInfo{
+		CurrentPlayerInfo:    currentPlayer,
+		AllPlayersInfo:       allPlayers,
+		WasShuffled:          wasShuffled,
+		ShuffleMessage:       shuffleMessage,
+		ShouldProcessPayouts: g.ShouldProcessPayouts(),
+	}, nil
 }
