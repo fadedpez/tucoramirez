@@ -289,29 +289,5 @@ func (g *Game) CompleteGameWithPayouts(ctx context.Context, walletService Wallet
 
 This approach ensures that the game service maintains full control over the game state and payout processing, while the Discord layer focuses solely on user interaction and display.
 
-## Development
-
-### Setup
-
-1. Clone the repository
-2. Create a `.env` file with your Discord bot token:
-   ```
-   DISCORD_TOKEN=your_token_here
-   ```
-3. Run the bot:
-   ```bash
-   go run cmd/bot/main.go
-   ```
-
-### Database Migrations
-
-When adding new features that require database changes:
-
-1. Create a new migration:
-   ```bash
-   go run cmd/migration/main.go create "description of changes"
-   ```
-
-2. Edit the generated SQL file in the `migrations/` directory
-
-3. The changes will be automatically applied when the bot starts
+## Next Steps
+TBD

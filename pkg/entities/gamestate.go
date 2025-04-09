@@ -66,4 +66,7 @@ type PlayerResult struct {
 	PlayerID string
 	Result   Result
 	Score    int
+	Bet      int64
+	Payout   int64
+	Metadata map[string]interface{} // For special bet information
 }

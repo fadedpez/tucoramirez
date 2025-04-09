@@ -136,6 +136,21 @@ func (b *Bot) handleMessageComponentInteraction(s *discordgo.Session, i *discord
 	case customID == "wallet_repay":
 		b.handleWalletRepayment(s, i)
 
+	case customID == "decline_split":
+		b.handleDeclineSplit(s, i)
+
+	case customID == "decline_special":
+		b.handleDeclineSpecial(s, i)
+
+	case customID == "split":
+		b.handleSplit(s, i)
+
+	case customID == "double_down":
+		b.handleDoubleDown(s, i)
+
+	case customID == "insurance":
+		b.handleInsurance(s, i)
+
 	case strings.HasPrefix(customID, "bet_"):
 		betAmount, err := strconv.ParseInt(strings.TrimPrefix(customID, "bet_"), 10, 64)
 		if err != nil {
@@ -352,11 +367,35 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 	switch action {
 	case "hit":
 		err = game.Hit(i.Member.User.ID)
+		// Check if the error is because the hand is already bust
+		if err != nil && err.Error() == "hand is bust" {
+			// This is not a real error, just inform the player
+			_, followupErr := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+				Content: "*Tuco points at your cards* You've already busted, amigo. Wait for the next round!",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			})
+			if followupErr != nil {
+				log.Printf("Error sending followup message: %v", followupErr)
+			}
+			return
+		}
 	case "stand":
 		err = game.Stand(i.Member.User.ID)
+		// Check if the error is because the hand is already bust
+		if err != nil && err.Error() == "hand is bust" {
+			// This is not a real error, just inform the player
+			_, followupErr := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+				Content: "*Tuco shakes his head* You've already busted, compadre. No need to stand!",
+				Flags:   discordgo.MessageFlagsEphemeral,
+			})
+			if followupErr != nil {
+				log.Printf("Error sending followup message: %v", followupErr)
+			}
+			return
+		}
 	}
 
-	// Only treat non-bust errors as actual errors
+	// Handle other errors
 	if err != nil {
 		_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 			Content: fmt.Sprintf("¡Ay, no bueno! *shuffles cards nervously* Something went wrong: %v", err),
@@ -370,10 +409,17 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 
 	// Use the service method to check if game is complete and handle dealer play/payouts
 	ctx := context.Background()
+
+	// Check the game state before calling CompleteGameIfDone
+	log.Printf("Game state before CompleteGameIfDone: %s", game.State)
+
 	gameComplete, err := game.CompleteGameIfDone(ctx, b.walletService)
 	if err != nil {
 		log.Printf("Error completing game: %v", err)
 	}
+
+	// Log the game state after calling CompleteGameIfDone
+	log.Printf("Game state after CompleteGameIfDone: %s, gameComplete: %v", game.State, gameComplete)
 
 	// Create updated game state embed
 	embed := b.displayGameState(s, i, game)
@@ -382,9 +428,9 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 	var components []discordgo.MessageComponent
 	var content string
 
-	// If the game is over, show play again button
-	if gameComplete {
-		// Game is over, show play again button
+	// If the game is in dealer or complete state, show play again button
+	if gameComplete || game.State == entities.StateDealer || game.State == entities.StateComplete {
+		// Game is over or in dealer phase, show play again button
 		components = []discordgo.MessageComponent{
 			discordgo.ActionsRow{
 				Components: []discordgo.MessageComponent{
@@ -397,29 +443,24 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 			},
 		}
 
-		// Update content to show game is over
-		content = "¡El juego ha terminado! *Tuco counts the chips with a grin*"
-	} else {
-		// Game is still in progress, show hit/stand buttons
-		components = []discordgo.MessageComponent{
-			discordgo.ActionsRow{
-				Components: []discordgo.MessageComponent{
-					discordgo.Button{
-						Label:    "Hit",
-						Style:    discordgo.PrimaryButton,
-						CustomID: "hit",
-					},
-					discordgo.Button{
-						Label:    "Stand",
-						Style:    discordgo.DangerButton,
-						CustomID: "stand",
-					},
-				},
-			},
+		// Update content based on game state
+		if game.State == entities.StateDealer {
+			content = "¡El dealer estu00e1 jugando! *Tuco flips cards dramatically*"
+		} else {
+			content = "¡El juego ha terminado! *Tuco counts the chips with a grin*"
 		}
+	} else if game.State == entities.StatePlaying {
+		// Game is in playing state, use the createGameButtons function to get the appropriate buttons
+		components = createGameButtons(game)
 
 		// Content for in-progress game
 		content = "¡Vamos a jugar! *Tuco waits for players to make their moves*"
+	} else {
+		// For other states (SPECIAL_BETS, etc.), use the createGameButtons function
+		components = createGameButtons(game)
+
+		// Generic content for other game states
+		content = "¡Vamos a jugar! *Tuco deals the cards with flair*"
 	}
 
 	// Update the message
@@ -435,7 +476,7 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 
 	// If the game is over, clean up
-	if gameComplete {
+	if gameComplete || game.State == entities.StateComplete {
 		// Send a game completion image if available
 		if b.imageService != nil {
 			image := b.imageService.GetRandomImage()
@@ -454,15 +495,9 @@ func (b *Bot) handleGameAction(s *discordgo.Session, i *discordgo.InteractionCre
 				})
 				if err != nil {
 					log.Printf("Error sending game completion image: %v", err)
-				} else {
-					log.Printf("Sent game completion image for channel %s", i.ChannelID)
 				}
 			}
 		}
-
-		b.mu.Lock()
-		delete(b.games, i.ChannelID)
-		b.mu.Unlock()
 	}
 }
 
@@ -785,12 +820,19 @@ func (b *Bot) handleBet(s *discordgo.Session, i *discordgo.InteractionCreate, be
 		log.Printf("Error sending bet confirmation: %v", err)
 	}
 
-	// Check if all players have placed bets and game has transitioned to DEALING or PLAYING
-	if game.State == entities.StateDealing || game.State == entities.StatePlaying {
-		// Update the game UI with the playing state
+	// Check if all players have placed bets and game has transitioned to a new state
+	if game.State == entities.StateDealing ||
+		game.State == entities.StatePlaying ||
+		game.State == blackjack.StateSplitting ||
+		game.State == blackjack.StateSpecialBets ||
+		game.State == entities.StateDealer ||
+		game.State == entities.StateComplete {
+		// Update the game UI with the current state
+		log.Printf("Updating game UI for state: %s", game.State)
 		return b.updateGameUI(s, i, game)
 	} else {
 		// Otherwise, update the betting UI to show the next player's turn
+		log.Printf("Updating betting UI for state: %s", game.State)
 		return b.updateBettingUI(s, i, game)
 	}
 }
@@ -885,14 +927,12 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 			// Create bet buttons
 			betButtons := []discordgo.MessageComponent{}
 			for _, amount := range betOptions {
-				// Only show bet options the player can afford
-				if amount <= currentPlayerInfo.WalletBalance {
-					betButtons = append(betButtons, discordgo.Button{
-						Label:    fmt.Sprintf("$%d", amount),
-						Style:    discordgo.SuccessButton,
-						CustomID: fmt.Sprintf("bet_%d", amount),
-					})
-				}
+				// Always show all bet options since we have loan functionality
+				betButtons = append(betButtons, discordgo.Button{
+					Label:    fmt.Sprintf("$%d", amount),
+					Style:    discordgo.SuccessButton,
+					CustomID: fmt.Sprintf("bet_%d", amount),
+				})
 			}
 
 			// Split buttons into rows of 5 max
@@ -927,6 +967,20 @@ func (b *Bot) updateBettingUI(s *discordgo.Session, i *discordgo.InteractionCrea
 func (b *Bot) updateGameUI(s *discordgo.Session, i *discordgo.InteractionCreate, game *blackjack.Game) error {
 	log.Printf("Updating game UI - Game state: %s, PayoutsProcessed: %v", game.State, game.PayoutsProcessed)
 
+	// If the game is in DEALER state, play the dealer's turn and transition to COMPLETE
+	if game.State == entities.StateDealer && !game.PayoutsProcessed {
+		log.Printf("Game is in DEALER state, playing dealer's turn")
+		ctx := context.Background()
+		
+		// Call CompleteGameIfDone to handle dealer play and payouts
+		gameComplete, err := game.CompleteGameIfDone(ctx, b.walletService)
+		if err != nil {
+			log.Printf("Error during dealer play: %v", err)
+		}
+		
+		log.Printf("After dealer play: gameComplete=%v, game.State=%s", gameComplete, game.State)
+	}
+
 	// Create the game state embed
 	embed := b.displayGameState(s, i, game)
 
@@ -936,6 +990,37 @@ func (b *Bot) updateGameUI(s *discordgo.Session, i *discordgo.InteractionCreate,
 	// Update the message with appropriate content based on game state
 	var content string
 	switch game.State {
+	case blackjack.StateSplitting:
+		// Get the current player whose turn it is to split
+		currentPlayerID := game.GetCurrentSplittingPlayerID()
+		if currentPlayerID == "" {
+			content = "¡Vamos a jugar! *Tuco examines the cards*"
+		} else {
+			currentPlayer, err := s.User(currentPlayerID)
+			if err != nil {
+				log.Printf("Error getting user %s: %v", currentPlayerID, err)
+				content = "¡Vamos a jugar! *Tuco examines the cards*"
+			} else {
+				content = fmt.Sprintf("*Tuco looks at %s* You have a pair! Would you like to split them?", currentPlayer.Username)
+			}
+		}
+	case blackjack.StateSpecialBets:
+		// Get the current player whose turn it is for special bets
+		currentPlayerID, err := game.GetCurrentSpecialBetsPlayerID()
+		if err != nil {
+			log.Printf("Error getting current special bets player: %v", err)
+			content = "¡Vamos a jugar! *Tuco examines the cards*"
+		} else if currentPlayerID == "" {
+			content = "¡Vamos a jugar! *Tuco examines the cards*"
+		} else {
+			currentPlayer, err := s.User(currentPlayerID)
+			if err != nil {
+				log.Printf("Error getting user %s: %v", currentPlayerID, err)
+				content = "¡Vamos a jugar! *Tuco examines the cards*"
+			} else {
+				content = fmt.Sprintf("*Tuco looks at %s* Any special bets, amigo?", currentPlayer.Username)
+			}
+		}
 	case entities.StateDealing:
 		content = "¡Vamos a jugar! *Tuco deals the cards with a flourish*"
 	case entities.StatePlaying:
@@ -959,6 +1044,8 @@ func (b *Bot) updateGameUI(s *discordgo.Session, i *discordgo.InteractionCreate,
 		} else {
 			content = "¡Vamos a jugar! *Tuco waits for players to make their moves*"
 		}
+	case entities.StateDealer:
+		content = "¡El dealer está jugando! *Tuco flips cards dramatically*"
 	case entities.StateComplete:
 		content = "¡El juego ha terminado! *Tuco counts the chips with a grin*"
 
@@ -986,6 +1073,36 @@ func (b *Bot) updateGameUI(s *discordgo.Session, i *discordgo.InteractionCreate,
 		return fmt.Errorf("error updating game UI: %v", err2)
 	}
 
+	// If the game is over, clean up
+	if game.State == entities.StateComplete {
+		// Send a game completion image if available
+		if b.imageService != nil {
+			image := b.imageService.GetRandomImage()
+			if image != nil && image.URL != "" {
+				// Send a separate message with the image
+				imageContent := ""
+				_, err := s.ChannelMessageSendComplex(i.ChannelID, &discordgo.MessageSend{
+					Content: imageContent,
+					Embeds: []*discordgo.MessageEmbed{
+						{
+							Image: &discordgo.MessageEmbedImage{
+								URL: image.URL,
+							},
+						},
+					},
+				})
+				if err != nil {
+					log.Printf("Error sending game completion image: %v", err)
+				} else {
+					log.Printf("Sent game completion image for channel %s", i.ChannelID)
+				}
+			}
+		}
+
+		b.mu.Lock()
+		delete(b.games, i.ChannelID)
+		b.mu.Unlock()
+	}
 	return nil
 }
 
@@ -1186,4 +1303,207 @@ func (b *Bot) sendWalletErrorResponse(s *discordgo.Session, i *discordgo.Interac
 	if err != nil {
 		log.Printf("Error sending followup message: %v", err)
 	}
+}
+
+func (b *Bot) handleDeclineSplit(s *discordgo.Session, i *discordgo.InteractionCreate) error {
+	// Get the game for this channel
+	b.mu.Lock()
+	game, exists := b.games[i.ChannelID]
+	b.mu.Unlock()
+
+	if !exists {
+		return fmt.Errorf("no game found for channel %s", i.ChannelID)
+	}
+
+	// Verify game state
+	if game.State != blackjack.StateSplitting {
+		return fmt.Errorf("game is not in splitting state")
+	}
+
+	// Get the player ID
+	playerID := i.Member.User.ID
+
+	// Check if it's this player's turn
+	currentPlayerID := game.GetCurrentSplittingPlayerID()
+	if currentPlayerID != playerID {
+		// Not this player's turn
+		return fmt.Errorf("not your turn to split")
+	}
+
+	// Decline the split
+	if err := game.DeclineSplit(playerID); err != nil {
+		return fmt.Errorf("error declining split: %v", err)
+	}
+
+	// Update the game UI
+	return b.updateGameUI(s, i, game)
+}
+
+func (b *Bot) handleDeclineSpecial(s *discordgo.Session, i *discordgo.InteractionCreate) error {
+	// Get the game for this channel
+	b.mu.Lock()
+	game, exists := b.games[i.ChannelID]
+	b.mu.Unlock()
+
+	if !exists {
+		return fmt.Errorf("no game found for channel %s", i.ChannelID)
+	}
+
+	// Verify game state
+	if game.State != blackjack.StateSpecialBets {
+		return fmt.Errorf("game is not in special bets state")
+	}
+
+	// Get the player ID
+	playerID := i.Member.User.ID
+
+	// Check if it's this player's turn
+	currentPlayerID, err := game.GetCurrentSpecialBetsPlayerID()
+	if err != nil {
+		return fmt.Errorf("error getting current player: %v", err)
+	}
+
+	if currentPlayerID != playerID {
+		// Not this player's turn
+		return fmt.Errorf("not your turn for special bets")
+	}
+
+	// Decline the special bet
+	if err := game.DeclineSpecialBet(playerID); err != nil {
+		return fmt.Errorf("error declining special bet: %v", err)
+	}
+
+	// Update the game UI
+	return b.updateGameUI(s, i, game)
+}
+
+func (b *Bot) handleSplit(s *discordgo.Session, i *discordgo.InteractionCreate) error {
+	// Get the game for this channel
+	b.mu.Lock()
+	game, exists := b.games[i.ChannelID]
+	b.mu.Unlock()
+
+	if !exists {
+		return fmt.Errorf("no game found for channel %s", i.ChannelID)
+	}
+
+	// Verify game state
+	if game.State != blackjack.StateSplitting {
+		return fmt.Errorf("game is not in splitting state")
+	}
+
+	// Get the player ID
+	playerID := i.Member.User.ID
+
+	// Check if it's this player's turn
+	currentPlayerID := game.GetCurrentSplittingPlayerID()
+	if currentPlayerID != playerID {
+		// Not this player's turn
+		return fmt.Errorf("not your turn to split")
+	}
+
+	// Perform the split action
+	ctx := context.Background()
+	if err := game.Split(ctx, playerID, b.walletService); err != nil {
+		return fmt.Errorf("error splitting hand: %v", err)
+	}
+
+	// Update the game UI
+	return b.updateGameUI(s, i, game)
+}
+
+func (b *Bot) handleDoubleDown(s *discordgo.Session, i *discordgo.InteractionCreate) error {
+	// Get the game for this channel
+	b.mu.Lock()
+	game, exists := b.games[i.ChannelID]
+	b.mu.Unlock()
+
+	if !exists {
+		return fmt.Errorf("no game found for channel %s", i.ChannelID)
+	}
+
+	// Verify game state
+	if game.State != blackjack.StateSpecialBets {
+		return fmt.Errorf("game is not in special bets state")
+	}
+
+	// Get the player ID
+	playerID := i.Member.User.ID
+
+	// Check if it's this player's turn
+	currentPlayerID, err := game.GetCurrentSpecialBetsPlayerID()
+	if err != nil {
+		return fmt.Errorf("error getting current player: %v", err)
+	}
+
+	if currentPlayerID != playerID {
+		// Not this player's turn
+		return fmt.Errorf("not your turn for special bets")
+	}
+
+	// Check if player is eligible for double down
+	if !game.IsEligibleForDoubleDown(playerID) {
+		return fmt.Errorf("you are not eligible to double down")
+	}
+
+	// Perform the double down action
+	ctx := context.Background()
+	if err := game.DoubleDown(ctx, playerID, b.walletService); err != nil {
+		return fmt.Errorf("error doubling down: %v", err)
+	}
+
+	// Send a Tuco-flavored message about the double down
+	message := getRandomDoubleDownMessage(fmt.Sprintf("<@%s>", playerID))
+	_, err = s.ChannelMessageSend(i.ChannelID, message)
+	if err != nil {
+		log.Printf("Error sending double down message: %v", err)
+		// Continue even if message fails to send
+	}
+
+	// Update the game UI
+	return b.updateGameUI(s, i, game)
+}
+
+func (b *Bot) handleInsurance(s *discordgo.Session, i *discordgo.InteractionCreate) error {
+	// Get the game for this channel
+	b.mu.Lock()
+	game, exists := b.games[i.ChannelID]
+	b.mu.Unlock()
+
+	if !exists {
+		return fmt.Errorf("no game found for channel %s", i.ChannelID)
+	}
+
+	// Verify game state
+	if game.State != blackjack.StateSpecialBets {
+		return fmt.Errorf("game is not in special bets state")
+	}
+
+	// Get the player ID
+	playerID := i.Member.User.ID
+
+	// Check if it's this player's turn
+	currentPlayerID, err := game.GetCurrentSpecialBetsPlayerID()
+	if err != nil {
+		return fmt.Errorf("error getting current player: %v", err)
+	}
+
+	if currentPlayerID != playerID {
+		// Not this player's turn
+		return fmt.Errorf("not your turn for special bets")
+	}
+
+	// Check if insurance is available
+	if !game.IsEligibleForInsurance() {
+		return fmt.Errorf("insurance is not available")
+	}
+
+	// Perform the insurance action
+	ctx := context.Background()
+	if err := game.PlaceInsurance(ctx, playerID, b.walletService); err != nil {
+		return fmt.Errorf("error placing insurance: %v", err)
+	}
+
+	// Update the game UI
+	return b.updateGameUI(s, i, game)
 }
