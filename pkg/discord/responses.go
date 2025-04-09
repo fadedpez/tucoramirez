@@ -2,6 +2,8 @@ package discord
 
 import (
 	"fmt"
+	"math/rand"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/fadedpez/tucoramirez/pkg/entities"
@@ -37,6 +39,9 @@ func createGameEmbed(game *blackjack.Game, s SessionInterface, guildID string) *
 	// Iterate through PlayerOrder to maintain consistent display order
 	for _, playerID := range game.PlayerOrder {
 		hand := game.Players[playerID]
+
+		// Don't skip parent hands of splits anymore - we want to show them
+
 		playerScore := blackjack.GetBestScore(hand.Cards)
 		playerStatus := getStatusMessage(hand.Status)
 
@@ -59,10 +64,66 @@ func createGameEmbed(game *blackjack.Game, s SessionInterface, guildID string) *
 		if (game.State == entities.StatePlaying && playerID == currentPlayerID) ||
 			(game.State == entities.StateBetting && len(game.PlayerOrder) > 0 &&
 				game.CurrentBettingPlayer < len(game.PlayerOrder) &&
-				game.PlayerOrder[game.CurrentBettingPlayer] == playerID) {
+				game.PlayerOrder[game.CurrentBettingPlayer] == playerID) ||
+			(game.State == "SPECIAL_BETS" && len(game.PlayerOrder) > 0 &&
+				game.CurrentSpecialBetsTurn < len(game.PlayerOrder) &&
+				game.PlayerOrder[game.CurrentSpecialBetsTurn] == playerID) {
 			namePrefix = "👉 " // Pointing finger emoji to indicate current turn
 		} else {
 			namePrefix = "" // No emoji for other players
+		}
+
+		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
+			Name:   fmt.Sprintf("%s%s", namePrefix, playerName),
+			Value:  fmt.Sprintf("%s\nScore: %d%s", FormatCards(hand.Cards), playerScore, playerStatus),
+			Inline: true,
+		})
+	}
+
+	// Add split hands
+	for handID, hand := range game.Players {
+		// Skip non-split hands (they're already displayed above)
+		if !hand.IsSplit() {
+			continue
+		}
+
+		// Get the parent player ID
+		parentID := hand.GetParentHandID()
+		if parentID == "" {
+			continue // Skip if no parent ID (shouldn't happen for valid split hands)
+		}
+
+		// Skip the "Unknown Player" split hand
+		// The split hand ID is in the format "playerID_split"
+		if handID != parentID+"_split" {
+			continue
+		}
+
+		// Get member info for display name
+		member, err := s.GuildMember(guildID, parentID)
+		playerName := "Unknown Player"
+		if err == nil && member.Nick != "" {
+			playerName = member.Nick
+		} else if err == nil && member.User != nil {
+			playerName = member.User.Username
+		}
+		playerName = fmt.Sprintf("%s (Split)", playerName)
+
+		// Add bet amount if available
+		if bet, hasBet := game.Bets[handID]; hasBet {
+			playerName = fmt.Sprintf("%s (Bet: $%d)", playerName, bet)
+		}
+
+		// Calculate score and status
+		playerScore := blackjack.GetBestScore(hand.Cards)
+		playerStatus := getStatusMessage(hand.Status)
+
+		// Add turn indicator if it's this hand's turn
+		var namePrefix string
+		if game.State == entities.StatePlaying && handID == currentPlayerID {
+			namePrefix = "👉 " // Pointing finger emoji to indicate current turn
+		} else {
+			namePrefix = "" // No emoji for other hands
 		}
 
 		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
@@ -109,7 +170,7 @@ func getGameResultsDescription(game *blackjack.Game, s SessionInterface, guildID
 		playerResult := ""
 		bet := game.Bets[playerID]
 		payout := payouts[playerID]
-		
+
 		// For blackjack, the payout already includes the correct amount (bet + winnings)
 		// For other results, we need to calculate the net result differently
 		var netResult int64
@@ -161,10 +222,25 @@ func getGameResultsDescription(game *blackjack.Game, s SessionInterface, guildID
 			netResultStr = fmt.Sprintf(" **+$%d**", netResult)
 		} else if netResult < 0 {
 			// Red for losses
-			netResultStr = fmt.Sprintf(" **-$%d**", -netResult)
+			if hand.IsDoubledDown() {
+				// For doubled down hands, show the actual bet amount for both bets
+				// In a double down, both the original bet and double down bet are the same amount
+				doubleDownBet := hand.GetDoubleDownBet()
+				netResultStr = fmt.Sprintf(" **Bet: -$%d, Double Down: -$%d**", doubleDownBet, doubleDownBet)
+			} else {
+				// Regular loss
+				netResultStr = fmt.Sprintf(" **-$%d**", -netResult)
+			}
 		} else {
 			// Gray for push/tie
-			netResultStr = " **±$0**"
+			if hand.IsDoubledDown() {
+				// For doubled down hands that push, show that both bets were returned
+				doubleDownBet := hand.GetDoubleDownBet()
+				netResultStr = fmt.Sprintf(" **Bet: ±$%d, Double Down: ±$%d**", doubleDownBet, doubleDownBet)
+			} else {
+				// Regular push
+				netResultStr = " **±$0**"
+			}
 		}
 
 		results += fmt.Sprintf("**%s**: %s (%d)%s\n", playerName, playerResult, playerScore, netResultStr)
@@ -175,7 +251,142 @@ func getGameResultsDescription(game *blackjack.Game, s SessionInterface, guildID
 
 // createGameButtons creates the action buttons if the game is in progress
 func createGameButtons(game *blackjack.Game) []discordgo.MessageComponent {
-	if game.State != entities.StatePlaying {
+	switch game.State {
+	case blackjack.StateSplitting:
+		// Get the current player whose turn it is to split
+		currentPlayerID := game.GetCurrentSplittingPlayerID()
+		if currentPlayerID == "" {
+			// No current player, just show Play Again button
+			return []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Play Again",
+							Style:    discordgo.PrimaryButton,
+							CustomID: "play_again",
+						},
+					},
+				},
+			}
+		}
+
+		// Show split options for the current player
+		return []discordgo.MessageComponent{
+			discordgo.ActionsRow{
+				Components: []discordgo.MessageComponent{
+					discordgo.Button{
+						Label:    "Split",
+						Style:    discordgo.PrimaryButton,
+						CustomID: "split",
+					},
+					discordgo.Button{
+						Label:    "Skip Split",
+						Style:    discordgo.SecondaryButton,
+						CustomID: "decline_split",
+					},
+				},
+			},
+		}
+
+	case blackjack.StateSpecialBets:
+		// Get the current player whose turn it is for special bets
+		currentPlayerID, err := game.GetCurrentSpecialBetsPlayerID()
+		if err != nil || currentPlayerID == "" {
+			// No current player or error, just show Play Again button
+			return []discordgo.MessageComponent{
+				discordgo.ActionsRow{
+					Components: []discordgo.MessageComponent{
+						discordgo.Button{
+							Label:    "Play Again",
+							Style:    discordgo.PrimaryButton,
+							CustomID: "play_again",
+						},
+					},
+				},
+			}
+		}
+
+		// Create buttons for special bets based on eligibility
+		components := []discordgo.MessageComponent{}
+		actionRow := discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{},
+		}
+
+		// Add Double Down button if eligible
+		if game.IsEligibleForDoubleDown(currentPlayerID) {
+			actionRow.Components = append(actionRow.Components, discordgo.Button{
+				Label:    "Double Down (Hit)",
+				Style:    discordgo.PrimaryButton,
+				CustomID: "double_down",
+			})
+		}
+
+		// Add Insurance button if eligible
+		if game.IsEligibleForInsurance() {
+			actionRow.Components = append(actionRow.Components, discordgo.Button{
+				Label:    "Insurance",
+				Style:    discordgo.PrimaryButton,
+				CustomID: "insurance",
+			})
+		}
+
+		// Always add Skip button
+		actionRow.Components = append(actionRow.Components, discordgo.Button{
+			Label:    "Skip Special Bets",
+			Style:    discordgo.SecondaryButton,
+			CustomID: "decline_special",
+		})
+
+		// Only add the action row if it has components
+		if len(actionRow.Components) > 0 {
+			components = append(components, actionRow)
+		}
+
+		return components
+
+	case entities.StatePlaying:
+		// Get the current player's ID
+		var currentPlayerID string
+		if len(game.PlayerOrder) > 0 && game.CurrentTurn < len(game.PlayerOrder) {
+			currentPlayerID = game.PlayerOrder[game.CurrentTurn]
+		}
+
+		// Check if the current player has doubled down
+		showHitButton := true
+		if currentPlayerID != "" {
+			hand, exists := game.Players[currentPlayerID]
+			if exists && hand.IsDoubledDown() {
+				// If player has doubled down, don't show hit button
+				showHitButton = false
+			}
+		}
+
+		// Create components based on whether hit button should be shown
+		components := []discordgo.MessageComponent{}
+		actionsRow := discordgo.ActionsRow{
+			Components: []discordgo.MessageComponent{},
+		}
+
+		// Only add hit button if player hasn't doubled down
+		if showHitButton {
+			actionsRow.Components = append(actionsRow.Components, discordgo.Button{
+				Label:    "Hit",
+				Style:    discordgo.PrimaryButton,
+				CustomID: "hit",
+			})
+		}
+
+		// Always show stand button
+		actionsRow.Components = append(actionsRow.Components, discordgo.Button{
+			Label:    "Stand",
+			Style:    discordgo.SecondaryButton,
+			CustomID: "stand",
+		})
+
+		components = append(components, actionsRow)
+		return components
+
+	default:
 		return []discordgo.MessageComponent{
 			discordgo.ActionsRow{
 				Components: []discordgo.MessageComponent{
@@ -187,23 +398,6 @@ func createGameButtons(game *blackjack.Game) []discordgo.MessageComponent {
 				},
 			},
 		}
-	}
-
-	return []discordgo.MessageComponent{
-		discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				discordgo.Button{
-					Label:    "Hit",
-					Style:    discordgo.PrimaryButton,
-					CustomID: "hit",
-				},
-				discordgo.Button{
-					Label:    "Stand",
-					Style:    discordgo.SecondaryButton,
-					CustomID: "stand",
-				},
-			},
-		},
 	}
 }
 
@@ -304,4 +498,24 @@ func createLobbyButtons(ownerID string) []discordgo.MessageComponent {
 			},
 		},
 	}
+}
+
+// getRandomDoubleDownMessage returns a random Tuco-flavored message for double down actions
+func getRandomDoubleDownMessage(playerName string) string {
+	messages := []string{
+		"¡Orale! %s is doubling down! One card and you're done, ese. That's how we roll at Tuco's table!",
+		"Look at %s going all in with a double down! Remember, you get one card only - house rules, homes!",
+		"¡Ay caramba! %s is doubling down! One more card coming your way, then you stand tight like a statue, comprende?",
+		"Tuco sees %s has some serious cojones doubling down! One card only, then you're locked in like my abuela's secret recipe!",
+		"¡Dios mío! %s is doubling their bet! You get one hit - just one - then you stand like a good hombre!",
+		"¡Mira, mira! %s doubled down! Tuco will give you one card, then your fate is sealed like concrete shoes, amigo!",
+		"¡Arriba, arriba! %s doubled down! One card coming your way, then you're standing tighter than Tuco's security at the back door!",
+		"¡Qué valiente! %s is doubling down! Tuco gives you one card only - that's the rule at this establishment!",
+	}
+
+	// Pick a random message
+	rand.Seed(time.Now().UnixNano())
+	selectedMessage := messages[rand.Intn(len(messages))]
+
+	return fmt.Sprintf(selectedMessage, playerName)
 }

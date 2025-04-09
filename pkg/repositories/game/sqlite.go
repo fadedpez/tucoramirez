@@ -45,6 +45,44 @@ const (
 		FOREIGN KEY (game_result_id) REFERENCES game_results(id) ON DELETE CASCADE
 	);
 	CREATE INDEX IF NOT EXISTS idx_player ON player_results(player_id)`
+
+	createGameRecordsTableSQL = `
+	CREATE TABLE IF NOT EXISTS game_records (
+		id TEXT PRIMARY KEY,
+		game_type TEXT NOT NULL,
+		channel_id TEXT NOT NULL,
+		start_time TIMESTAMP NOT NULL,
+		end_time TIMESTAMP NOT NULL,
+		dealer_cards TEXT NOT NULL,  -- JSON array of card strings
+		dealer_score INTEGER NOT NULL,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	);
+	CREATE INDEX IF NOT EXISTS idx_game_records_channel ON game_records(channel_id)`
+
+	createHandRecordsTableSQL = `
+	CREATE TABLE IF NOT EXISTS hand_records (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		game_record_id TEXT NOT NULL,
+		player_id TEXT NOT NULL,
+		hand_id TEXT NOT NULL,
+		parent_hand_id TEXT,
+		cards TEXT NOT NULL,  -- JSON array of card strings
+		final_score INTEGER NOT NULL,
+		initial_bet INTEGER NOT NULL,
+		is_split BOOLEAN NOT NULL,
+		is_doubled_down BOOLEAN NOT NULL,
+		double_down_bet INTEGER,
+		has_insurance BOOLEAN NOT NULL,
+		insurance_bet INTEGER,
+		result TEXT NOT NULL,
+		payout INTEGER NOT NULL,
+		insurance_payout INTEGER,
+		actions TEXT NOT NULL,  -- JSON array of action strings
+		metadata TEXT,  -- JSON object for additional metadata
+		FOREIGN KEY (game_record_id) REFERENCES game_records(id) ON DELETE CASCADE
+	);
+	CREATE INDEX IF NOT EXISTS idx_hand_records_player ON hand_records(player_id);
+	CREATE INDEX IF NOT EXISTS idx_hand_records_game ON hand_records(game_record_id)`
 )
 
 // SQLiteRepository implements the Repository interface using SQLite
