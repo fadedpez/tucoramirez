@@ -290,4 +290,62 @@ func (g *Game) CompleteGameWithPayouts(ctx context.Context, walletService Wallet
 This approach ensures that the game service maintains full control over the game state and payout processing, while the Discord layer focuses solely on user interaction and display.
 
 ## Next Steps
-TBD
+
+### Player Statistics Feature with Elasticsearch Integration
+
+We're implementing a comprehensive player statistics system with the following components:
+
+#### 1. Data Architecture
+
+- **Primary Storage**: SQLite for transactional game data
+- **Analytics Engine**: Elasticsearch for statistics aggregation and historical data
+- **Data Flow**: Game results saved to SQLite → indexed in Elasticsearch → queried for statistics
+
+#### 2. Implementation Components
+
+##### Database Schema
+- New `player_statistics` table in SQLite for cached statistics
+- Elasticsearch indices for game results with nested player data
+- Index lifecycle management for automatic data retention
+
+##### Repository Layer
+- Extended game repository interface with statistics methods
+- Elasticsearch client integration for indexing and querying
+- Game result archiving with JSON export for backup
+
+##### Service Layer
+- New statistics service for aggregating player performance
+- Top performer calculation with crown emoji indicators
+- Pagination support for statistics display
+
+##### Discord Commands
+- New `/stats` command with pagination controls
+- Toggle between core stats and special stats views
+- Sorting options for different statistics categories
+
+#### 3. Statistics Categories
+
+##### Core Statistics
+- Games played, wins, losses, pushes
+- Total bet, total winnings, net profit
+- Win rate percentage
+
+##### Special Statistics (Blackjack)
+- Blackjacks achieved
+- Busts count
+- Special bets usage (splits, double downs, insurance)
+
+#### 4. User Interface
+
+- Paginated display with navigation buttons
+- Crown emoji indicators for top performers
+- Clean tabular format for easy reading
+- Toggle buttons for different statistic views
+
+#### 5. Data Management
+
+- Game results stored indefinitely in Elasticsearch
+- Automatic index rotation based on time periods
+- Efficient aggregation queries for real-time statistics
+
+This approach provides a scalable solution for player statistics while maintaining high performance and data integrity across the application.

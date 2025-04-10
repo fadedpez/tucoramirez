@@ -1,14 +1,19 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/fadedpez/tucoramirez/pkg/discord"
 	"github.com/fadedpez/tucoramirez/pkg/repositories/game"
 	walletRepo "github.com/fadedpez/tucoramirez/pkg/repositories/wallet"
+	"github.com/fadedpez/tucoramirez/pkg/scheduler"
+	"github.com/fadedpez/tucoramirez/pkg/services/statistics"
 	walletService "github.com/fadedpez/tucoramirez/pkg/services/wallet"
 	"github.com/joho/godotenv"
 )
@@ -28,6 +33,13 @@ func main() {
 
 	// Initialize repository
 	var gameRepo game.Repository
+
+	// Create application context that can be cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Variable to hold the maintenance scheduler if we're using Elasticsearch
+	var maintenanceScheduler *scheduler.ElasticsearchMaintenanceScheduler
 
 	// You can use an environment variable to choose the repository type
 	storageType := os.Getenv("STORAGE_TYPE") // Add this to your .env file
@@ -49,8 +61,71 @@ func main() {
 			log.Println("Falling back to in-memory repository")
 			gameRepo = game.NewMemoryRepository()
 		} else {
-			gameRepo = sqliteRepo
-			log.Println("Successfully initialized SQLite repository for game data")
+			// Check if Elasticsearch is configured
+			esURL := os.Getenv("ELASTICSEARCH_URL")
+			if esURL != "" {
+				log.Printf("Elasticsearch URL configured: %s", esURL)
+				esUsername := os.Getenv("ELASTICSEARCH_USERNAME")
+				esPassword := os.Getenv("ELASTICSEARCH_PASSWORD")
+				esIndexPrefix := os.Getenv("ELASTICSEARCH_INDEX_PREFIX")
+				
+				// Create Elasticsearch configuration
+				esConfig := &game.ElasticsearchConfig{
+					URL:         esURL,
+					Username:    esUsername,
+					Password:    esPassword,
+					IndexPrefix: esIndexPrefix,
+					ArchivePath: dataDir + "/archives",
+					BackupPath:  dataDir + "/backups",
+				}
+				
+				// Set retention period if configured
+				if retentionDays := os.Getenv("ELASTICSEARCH_RETENTION_DAYS"); retentionDays != "" {
+					var days int
+					if _, err := fmt.Sscanf(retentionDays, "%d", &days); err == nil && days > 0 {
+						esConfig.RetentionPeriod = time.Duration(days) * 24 * time.Hour
+					}
+				}
+				
+				// Set rotation period if configured
+				if rotationDays := os.Getenv("ELASTICSEARCH_ROTATION_DAYS"); rotationDays != "" {
+					var days int
+					if _, err := fmt.Sscanf(rotationDays, "%d", &days); err == nil && days > 0 {
+						esConfig.RotationPeriod = time.Duration(days) * 24 * time.Hour
+					}
+				} else {
+					// Default to monthly rotation
+					esConfig.RotationPeriod = 30 * 24 * time.Hour
+				}
+				
+				// Configure backup settings
+				if backupEnabled := os.Getenv("ELASTICSEARCH_BACKUP_ENABLED"); backupEnabled == "true" {
+					esConfig.BackupEnabled = true
+					
+					// Set backup schedule if configured
+					if backupSchedule := os.Getenv("ELASTICSEARCH_BACKUP_SCHEDULE"); backupSchedule != "" {
+						esConfig.BackupSchedule = backupSchedule
+					}
+				}
+				
+				esRepo, err := game.NewElasticsearchRepository(sqliteRepo, esConfig)
+				if err != nil {
+					log.Printf("Failed to initialize Elasticsearch repository: %v", err)
+					log.Println("Using SQLite repository only")
+					gameRepo = sqliteRepo
+				} else {
+					log.Println("Successfully initialized Elasticsearch repository for statistics")
+					gameRepo = esRepo
+					
+					// Initialize and start the maintenance scheduler
+					log.Println("Initializing Elasticsearch maintenance scheduler")
+					maintenanceScheduler = scheduler.NewElasticsearchMaintenanceScheduler(esRepo)
+					maintenanceScheduler.Start(ctx)
+				}
+			} else {
+				gameRepo = sqliteRepo
+				log.Println("Successfully initialized SQLite repository for game data")
+			}
 		}
 	} else {
 		// Default to memory repository
@@ -80,7 +155,11 @@ func main() {
 	}
 
 	wService := walletService.NewService(walletRepository)
-	bot, err := discord.NewBot(token, gameRepo, wService)
+	
+	// Initialize statistics service
+	statsService := statistics.NewService(gameRepo)
+	
+	bot, err := discord.NewBot(token, gameRepo, wService, statsService)
 	if err != nil {
 		log.Fatalf("Error creating bot: %v", err)
 	}
@@ -99,6 +178,17 @@ func main() {
 
 	// Cleanup and exit
 	log.Println("Shutting down...")
+	
+	// Cancel the context to stop the scheduler
+	cancel()
+	
+	// Stop the maintenance scheduler if it was started
+	if maintenanceScheduler != nil {
+		log.Println("Stopping Elasticsearch maintenance scheduler")
+		maintenanceScheduler.Stop()
+	}
+	
+	// Stop the bot
 	if err := bot.Stop(); err != nil {
 		log.Printf("Error stopping bot: %v", err)
 	}
